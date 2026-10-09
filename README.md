@@ -32,6 +32,11 @@ python tools/prepare.py --skate "<Skate 3.iso or folder>" --gta "<GTA V folder>"
 
 (from the extracted release folder; omit --stance for Regular).
 
+### Known Limitations & Future Support
+
+- **Rockstar Editor:** Recording and playback are not currently functional with SK8V. Support is planned for a future update.
+- **GTA V Enhanced:** SK8V currently supports GTA V Legacy only. Enhanced Edition compatibility is a long-term goal, but may require significant additional work and is not guaranteed.
+
 ## Controls
 
 **All regular skating controls are Skate 3's.** SK8V adds:
