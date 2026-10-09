@@ -38,6 +38,10 @@ pub struct SvHudViewport {
     pub max_aspect: f32,
     /// Bit 0: HUD enabled (the runtime runs the movie only when set).
     pub flags: u32,
+    /// GTA's HUD area as the game reports it (normalized x0, y0, x1, y1:
+    /// script-graphics alignment, safe zone and ultrawide placement
+    /// included); all zero: unknown, the safe-zone model applies.
+    pub hud_area: [f32; 4],
 }
 
 /// One HUD texture: RGBA8, straight alpha, sRGB colour.
@@ -138,7 +142,8 @@ fn layout_for(v: &SvHudViewport) -> Option<Layout> {
         } else {
             DEFAULT_MAX_ASPECT
         };
-        Layout::compute(v.width, v.height, v.safe_zone, max_aspect)
+        Layout::compute_in(v.width, v.height, v.hud_area, max_aspect)
+            .unwrap_or_else(|| Layout::compute(v.width, v.height, v.safe_zone, max_aspect))
     })
 }
 
@@ -725,9 +730,10 @@ mod tests {
     /// Must match the static_asserts in the hud block of skatev_runtime.h.
     #[test]
     fn hud_abi_layout_matches_header() {
-        assert_eq!(size_of::<SvHudViewport>(), 24);
+        assert_eq!(size_of::<SvHudViewport>(), 40);
         assert_eq!(offset_of!(SvHudViewport, safe_zone), 12);
         assert_eq!(offset_of!(SvHudViewport, flags), 20);
+        assert_eq!(offset_of!(SvHudViewport, hud_area), 24);
         assert_eq!(size_of::<SvHudTexture>(), 16);
         assert_eq!(size_of::<SvHudVertex>(), 16);
         assert_eq!(size_of::<SvHudDraw>(), 48);
@@ -751,6 +757,7 @@ mod tests {
             safe_zone: 1.0,
             max_aspect: 0.0,
             flags: 0,
+            hud_area: [0.0; 4],
         };
         assert!(layout_for(&v).is_none());
         v.flags = 1;

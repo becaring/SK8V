@@ -54,8 +54,10 @@ public:
 // fragment's own skeleton resolves. Fails closed with `why`.
 bool ReadCompound(const Memory& memory, std::uintptr_t type, std::vector<Child>& out, std::string& why);
 
-// 14 characters, the template name length: "skv_" + 8 hex content hash + "_c"/"_b".
-std::string ModelName(const Templates& t, const Child& child);
+// 14 characters, the template name length: "skv_" + 8 hex hash of the limb's
+// identity (ped model, compound index, bone tag, kind) + "_c"/"_b". Stable for
+// the process however the live geometry reads, so a limb registers once.
+std::string ModelName(std::uint32_t pedModel, std::size_t index, const Child& child);
 
 // What GTA's drawable store reads from a placed collider drawable (Legacy3889,
 // decrypted image; evidence/2026-10-03/ped-collider-shader-group.md). The

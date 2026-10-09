@@ -3,7 +3,9 @@
 //! Rule (docs/DECISIONS.md "HUD layout"):
 //! 1. GTA's safe zone (`GET_SAFE_ZONE_SIZE`, the profile's "Safezone size",
 //!    0.9..1.0) insets the screen evenly on every side, exactly as GTA's own
-//!    HUD is inset.
+//!    HUD is inset. In game the host reports GTA's actual HUD area instead
+//!    (`compute_in`: its script-graphics alignment, which also holds the HUD
+//!    and minimap in from the edges on ultrawide panels).
 //! 2. The movie is scaled uniformly so its 720 units fill the safe height
 //!    (the retail HUD is authored at 16:9 with its own title-safe margins, so
 //!    at 16:9 with safe zone 1.0 it sits exactly where it did on a 720p TV,
@@ -53,8 +55,24 @@ impl Layout {
         let (w, h) = (width.max(1) as f32, height.max(1) as f32);
         let sz = if safe_zone.is_finite() { safe_zone.clamp(0.5, 1.0) } else { 1.0 };
         let (sw, sh) = (w * sz, h * sz);
-        let (cx, cy) = (w * 0.5, h * 0.5);
-        let safe = [cx - sw * 0.5, cy - sh * 0.5, cx + sw * 0.5, cy + sh * 0.5];
+        let safe = [(w - sw) * 0.5, (h - sh) * 0.5, (w + sw) * 0.5, (h + sh) * 0.5];
+        Self::within(width, height, safe, max_aspect)
+    }
+
+    /// As `compute`, inside GTA's own HUD area as the game reports it
+    /// (normalized x0, y0, x1, y1 from its script-graphics alignment, which
+    /// applies the safe zone and GTA's ultrawide placement). None when the
+    /// area is degenerate.
+    pub fn compute_in(width: u32, height: u32, area: [f32; 4], max_aspect: f32) -> Option<Self> {
+        let (w, h) = (width.max(1) as f32, height.max(1) as f32);
+        let ok = area.iter().all(|v| v.is_finite() && (-0.01..=1.01).contains(v))
+            && area[2] - area[0] > 0.25 && area[3] - area[1] > 0.25;
+        ok.then(|| Self::within(width, height, [area[0] * w, area[1] * h, area[2] * w, area[3] * h], max_aspect))
+    }
+
+    fn within(width: u32, height: u32, safe: [f32; 4], max_aspect: f32) -> Self {
+        let (sw, sh) = (safe[2] - safe[0], safe[3] - safe[1]);
+        let (cx, cy) = ((safe[0] + safe[2]) * 0.5, (safe[1] + safe[3]) * 0.5);
         let cap = if max_aspect.is_finite() && max_aspect > 0.0 {
             max_aspect.max(MOVIE_ASPECT)
         } else {
@@ -104,6 +122,23 @@ mod tests {
         assert!(close(l.edge_offset, 0.0));
         assert_eq!(l.region, [0.0, 0.0, 1920.0, 1080.0]);
         assert_eq!(l.to_pixels([1280.0, 720.0]), [1920.0, 1080.0]);
+    }
+
+    #[test]
+    fn gta_area_replaces_the_safe_zone_model() {
+        // 21:9 with GTA's HUD held to a centred 16:9 area at safe zone 0.9
+        let (w, h) = (2560u32, 1080u32);
+        let inset = (1.0 - (16.0 / 9.0) / (w as f32 / h as f32)) * 0.5;
+        let area = [inset + 0.05 * (1.0 - 2.0 * inset), 0.05, 1.0 - inset - 0.05 * (1.0 - 2.0 * inset), 0.95];
+        let l = Layout::compute_in(w, h, area, DEFAULT_MAX_ASPECT).unwrap();
+        assert!(close(l.safe[0], area[0] * w as f32) && close(l.safe[3], 0.95 * h as f32));
+        assert!(close(l.region[0], l.safe[0]) && close(l.region[2], l.safe[2]));
+        assert!(close(l.scale, 0.9 * h as f32 / MOVIE_HEIGHT));
+        // the area as compute models it gives compute's layout
+        let m = Layout::compute(1920, 1080, 0.9, DEFAULT_MAX_ASPECT);
+        assert_eq!(Layout::compute_in(1920, 1080, [0.05, 0.05, 0.95, 0.95], DEFAULT_MAX_ASPECT).map(|l| l.region.map(|v| v.round())),
+                   Some(m.region.map(|v| v.round())));
+        assert!(Layout::compute_in(w, h, [0.0; 4], DEFAULT_MAX_ASPECT).is_none());
     }
 
     #[test]

@@ -355,6 +355,8 @@ struct SvHudViewport {
     float safe_zone;             // GET_SAFE_ZONE_SIZE (1.0 = no inset)
     float max_aspect;            // widest HUD region; 0 = default 2.4, < 0 uncapped
     std::uint32_t flags;         // bit 0: HUD enabled
+    float hud_area[4];           // GTA's HUD area, normalized x0, y0, x1, y1 (script gfx alignment:
+                                 // safe zone and ultrawide placement); all 0 = use the safe-zone model
 };
 struct SvHudTexture {
     std::uint32_t size;
@@ -387,7 +389,8 @@ using SvSetHudViewportFn = std::uint32_t(__cdecl*)(void*, const SvHudViewport*);
 using SvGetHudTextureFn = std::uint32_t(__cdecl*)(const void*, std::uint32_t, SvHudTexture*, void*, std::uint32_t);
 using SvGetHudFrameFn = std::uint32_t(__cdecl*)(const void*, SvHudFrame*, SvHudDraw*, std::uint32_t, SvHudVertex*,
                                                 std::uint32_t);
-static_assert(sizeof(SvHudViewport) == 24);
+static_assert(sizeof(SvHudViewport) == 40);
+static_assert(offsetof(SvHudViewport, hud_area) == 24);
 static_assert(offsetof(SvHudViewport, safe_zone) == 12);
 static_assert(offsetof(SvHudViewport, flags) == 20);
 static_assert(sizeof(SvHudTexture) == 16);

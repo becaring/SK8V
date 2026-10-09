@@ -260,19 +260,17 @@ bool ReadCompound(const Memory& m, std::uintptr_t type, std::vector<Child>& out,
     return true;
 }
 
-std::string ModelName(const Templates& t, const Child& c) {
-    // FNV-1a over the built resources under a placeholder of the final
-    // name's length: live bytes of the child that never reach the files
-    // (they minted a new name per board take-out; each name holds GTA
-    // streaming slots for the process, and the pool ran dry: crash at
-    // GTA5+0x16AAF5B, 2026-10-07) cannot change the name.
+std::string ModelName(std::uint32_t pedModel, std::size_t index, const Child& c) {
+    // FNV-1a over what the limb is, never over its geometry: the compound is
+    // read live and its floats differ between take-outs, so content names
+    // minted 21 new names per take-out. Each name holds GTA streaming slots
+    // for the process; the pool ran dry (crash at GTA5+0x16AAF5B, 2026-10-07,
+    // and on the second take-out with Open Interiors installed, 2026-10-09).
     const char kind = c.kind == kCapsule ? 'c' : 'b';
-    const std::string placeholder = std::string("skv_00000000_") + kind;
-    std::vector<std::uint8_t> ydr, ytyp;
-    if (!BuildYdr(t, c, placeholder, ydr) || !BuildYtyp(t, c, placeholder, ytyp)) return {};
+    const std::uint32_t key[] = {pedModel, static_cast<std::uint32_t>(index), c.boneTag, static_cast<std::uint32_t>(kind)};
     std::uint32_t h = 2166136261u;
-    for (const auto* bytes : {&ydr, &ytyp})
-        for (std::uint8_t b : *bytes) h = (h ^ b) * 16777619u;
+    for (const auto* b = reinterpret_cast<const std::uint8_t*>(key); b != reinterpret_cast<const std::uint8_t*>(key + 4); ++b)
+        h = (h ^ *b) * 16777619u;
     char name[16];
     std::snprintf(name, sizeof(name), "skv_%08x_%c", h, kind);
     return name;

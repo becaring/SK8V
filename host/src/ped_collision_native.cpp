@@ -34,9 +34,9 @@ std::map<std::string,Registered> g_registered;
 // Names registered per process at most (21 limbs a character; a few
 // characters and outfits). Each holds GTA streaming slots until exit.
 constexpr std::size_t kRegistrationBudget=128;
-// Content-named collider models already built and on disk this process (the
-// name hashes the authored child; templates do not change while GTA runs), so
-// each is built once rather than on every board take-out.
+// Collider models already built and on disk this process (named by limb
+// identity; the first build stands for the process), so each is built and
+// registered once rather than on every board take-out.
 std::set<std::string> g_written;
 bool g_started=false, g_type=false, g_failed=false, g_live=false;
 int g_ped=0;
@@ -102,8 +102,10 @@ bool Prepare(int ped,const probe::SkeletonInfo& skeleton,std::uint32_t count,std
     probe::LiveMemory memory;
     if(!builder::ReadCompound(memory,type,children,why)) return false;
     parts.clear();
-    for(const auto& c:children) {
-        Part p;p.entry.model=builder::ModelName(g_templates,c);p.entry.boneTag=c.boneTag;
+    const auto model=gta::Call<std::uint32_t>(gta::GET_ENTITY_MODEL,ped);
+    for(std::size_t i=0;i<children.size();++i) {
+        const auto& c=children[i];
+        Part p;p.entry.model=builder::ModelName(model,i,c);p.entry.boneTag=c.boneTag;
         if(p.entry.model.empty()) { why="collider resource could not be built";return false; }
         p.bone=probe::BoneIndexByTag(skeleton,c.boneTag);
         if(p.bone<0||p.bone>=static_cast<int>(count)) { why="character lacks a ragdoll collision bone";return false; }

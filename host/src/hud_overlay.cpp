@@ -193,9 +193,24 @@ void Tick(bool skating) {
         v.safe_zone = safe;
         v.max_aspect = g.maxAspect;
         v.flags = 1;
+        if (g.safeOverride < 0.5f) {
+            // GTA's own HUD inset (safe zone plus its ultrawide placement, where the minimap is): a
+            // top-left aligned origin, mirrored (the area is centred). Never less than the safe zone.
+            float x = 0.0f, y = 0.0f;
+            Call<void>(gta::SET_SCRIPT_GFX_ALIGN, 'L', 'T');
+            Call<void>(gta::SET_SCRIPT_GFX_ALIGN_PARAMS, 0.0f, 0.0f, 0.0f, 0.0f);
+            Call<void>(gta::GET_SCRIPT_GFX_ALIGN_POSITION, 0.0f, 0.0f, &x, &y);
+            Call<void>(gta::RESET_SCRIPT_GFX_ALIGN);
+            const float model = (1.0f - safe) * 0.5f - 0.005f;
+            if (x >= model && y >= model && x < 0.4f && y < 0.4f) {
+                const float area[4] = {x, y, 1.0f - x, 1.0f - y};
+                std::memcpy(v.hud_area, area, sizeof(area));
+            }
+        }
         if (std::memcmp(&v, &g.sent, sizeof(v)) != 0 && g.setViewport(g.runtime, &v)) {
             g.sent = v;
-            Logf("SkateV HUD: viewport %ux%u safe zone %.2f", w, h, safe);
+            Logf("SkateV HUD: viewport %ux%u safe zone %.2f, GTA HUD area %.4f,%.4f-%.4f,%.4f", w, h, safe,
+                 v.hud_area[0], v.hud_area[1], v.hud_area[2], v.hud_area[3]);
         }
     }
     const bool paused = gta::FrontendActive();
