@@ -32,6 +32,13 @@ python tools/prepare.py --skate "<Skate 3.iso or folder>" --gta "<GTA V folder>"
 
 (from the extracted release folder; omit --stance for Regular).
 
+### Unable to save settings in the menu?
+
+1. Right-click your game install folder and select Properties.
+2. Click the Security tab and click Edit.
+3. Click Add, type Everyone (or your specific user account name), then click Check Names and OK.
+4. Select the newly added user or group, check the box for Full control under the Allow column, then click Apply and OK
+
 ### Known Limitations & Future Support
 
 - **Rockstar Editor:** Recording and playback are not currently functional with SK8V. Support is planned for a future update.
