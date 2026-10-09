@@ -1974,7 +1974,11 @@ void LifecycleFrame(Session& s, const Config& cfg, bool f6) {
             SetState(s, LifeState::Ready, why);
             break;
         }
-        if (now - s.stateSince > 45000) {
+        // A first take-out waits for the runtime's preparation, which waits for GTA to stream the area
+        // (a hard disk: past 45 s, 2026-10-09); the shorter limit is for an area that never loads.
+        SvLifecycleState life{};
+        const bool preparing = g_runtime.LifecycleState(life) && !life.prepared;
+        if (now - s.stateSince > (preparing ? 180000u : 45000u)) {
             Notify(s, "Skate could not load this area in time", 3000);
             SetState(s, LifeState::Ready, "waiting timed out");
             break;

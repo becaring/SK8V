@@ -5,6 +5,7 @@
 #include "game_probe.h"
 
 #include <windows.h>
+#include <psapi.h>
 #include <main.h>
 #include <algorithm>
 #include <atomic>
@@ -66,36 +67,52 @@ std::uintptr_t Locate(std::vector<std::uint64_t> insts) {
     const auto self = reinterpret_cast<std::uintptr_t>(insts.data());
     const auto selfEnd = self + insts.size() * 8;
     std::unordered_map<std::uint64_t, std::uint32_t> votes;
-    constexpr size_t kChunk = 1 << 20;
+    std::uint64_t best = 0;
+    std::uint32_t top = 0;
+    // Settled once one base holds nearly every instance that has a level index.
+    const auto indexed = static_cast<std::uint32_t>(std::count_if(index.begin(), index.end(), [](std::uint32_t i) { return i != 0xFFFFFFFFu; }));
+    const std::uint32_t settled = std::max<std::uint32_t>(8, indexed - indexed / 10);
+    constexpr size_t kPage = 0x1000, kChunk = 1 << 20;
     std::vector<std::uint8_t> buf(kChunk);
+    std::vector<PSAPI_WORKING_SET_EX_INFORMATION> ws(kChunk / kPage);
     const HANDLE me = GetCurrentProcess();
     MEMORY_BASIC_INFORMATION mbi{};
-    for (std::uintptr_t a = 0x10000; a < 0x7FFFFFFF0000ull && VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) == sizeof mbi;
+    for (std::uintptr_t a = 0x10000; top < settled && a < 0x7FFFFFFF0000ull && VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) == sizeof mbi;
          a = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize) {
         if (mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE || (mbi.Protect & PAGE_GUARD) || !(mbi.Protect & PAGE_READWRITE)) continue;
         const auto lo = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress), hi = lo + mbi.RegionSize;
-        for (auto p = lo; p < hi; p += kChunk) {
-            SIZE_T got = 0;
+        for (auto p = lo; p < hi && top < settled; p += kChunk) {
             const SIZE_T want = std::min<std::uintptr_t>(kChunk, hi - p);
-            if (!ReadProcessMemory(me, reinterpret_cast<void*>(p), buf.data(), want, &got)) continue;
-            for (SIZE_T o = 0; o + 8 <= got; o += 8) {
-                std::uint64_t v;
-                std::memcpy(&v, &buf[o], 8);
-                const std::uint64_t m = v & kMask;
-                if (m < insts.front() || m > insts.back()) continue;
-                const auto at = p + o;
-                if (at >= self && at < selfEnd) continue;
-                const auto it = std::lower_bound(insts.begin(), insts.end(), m);
-                if (it == insts.end() || *it != m) continue;
-                const std::uint32_t ix = index[it - insts.begin()];
-                if (ix != 0xFFFFFFFFu && at >= ix * kStride) ++votes[at - ix * kStride];
+            // Only pages in RAM: the table is touched every physics frame, and reading paged-out
+            // memory pulls it back from disk (a hard disk: 33 s searches and stalled frames, 2026-10-09).
+            const size_t pages = want / kPage;
+            for (size_t k = 0; k < pages; ++k) ws[k].VirtualAddress = reinterpret_cast<void*>(p + k * kPage);
+            const bool known = QueryWorkingSetEx(me, ws.data(), static_cast<DWORD>(pages * sizeof ws[0])) != 0;
+            for (size_t k0 = 0; k0 < pages;) {
+                if (known && !ws[k0].VirtualAttributes.Valid) { ++k0; continue; }
+                size_t k1 = k0 + 1;
+                while (k1 < pages && (!known || ws[k1].VirtualAttributes.Valid)) ++k1;
+                SIZE_T got = 0;
+                const auto run = p + k0 * kPage;
+                ReadProcessMemory(me, reinterpret_cast<void*>(run), buf.data(), (k1 - k0) * kPage, &got);
+                for (SIZE_T o = 0; o + 8 <= got; o += 8) {
+                    std::uint64_t v;
+                    std::memcpy(&v, &buf[o], 8);
+                    const std::uint64_t m = v & kMask;
+                    if (m < insts.front() || m > insts.back()) continue;
+                    const auto at = run + o;
+                    if (at >= self && at < selfEnd) continue;
+                    const auto it = std::lower_bound(insts.begin(), insts.end(), m);
+                    if (it == insts.end() || *it != m) continue;
+                    const std::uint32_t ix = index[it - insts.begin()];
+                    if (ix == 0xFFFFFFFFu || at < ix * kStride) continue;
+                    const auto n = ++votes[at - ix * kStride];
+                    if (n > top) { top = n; best = at - ix * kStride; }
+                }
+                k0 = k1;
             }
         }
     }
-    std::uint64_t best = 0;
-    std::uint32_t top = 0;
-    for (const auto& [base, n] : votes)
-        if (n > top) { top = n; best = base; }
     Logf("physics level: locate: %zu instances named by GTA, best table candidate %llx with %u hits", insts.size(),
          static_cast<unsigned long long>(best), top);
     return top >= std::max<size_t>(8, insts.size() / 2) ? best : 0;

@@ -110,7 +110,10 @@ bool Prepare(int ped,const probe::SkeletonInfo& skeleton,std::uint32_t count,std
         p.bone=probe::BoneIndexByTag(skeleton,c.boneTag);
         if(p.bone<0||p.bone>=static_cast<int>(count)) { why="character lacks a ragdoll collision bone";return false; }
         const auto ydr=g_cache/(p.entry.model+".ydr"), ytyp=g_cache/(p.entry.model+".ytyp");
-        if(!g_written.count(p.entry.model)) {
+        // GTA streams these files whenever the model reloads (after the editor, say): a file
+        // deleted mid-game (a cleanup, an antivirus) would be a fatal read in its streamer.
+        std::error_code missing;
+        if(!g_written.count(p.entry.model) || !std::filesystem::exists(ydr,missing) || !std::filesystem::exists(ytyp,missing)) {
             std::vector<std::uint8_t> sys;
             const auto& header=c.kind==builder::kCapsule?g_templates.capsule.header:g_templates.box.header;
             if(!builder::BuildYdr(g_templates,c,p.entry.model,sys)||!WriteOnce(ydr,builder::Rsc7File(header,sys))||
