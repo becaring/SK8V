@@ -35,6 +35,7 @@ python tools/prepare.py --skate "<Skate 3.iso or folder>" --gta "<GTA V folder>"
 ### Known Limitations & Future Support
 
 - **Rockstar Editor:** Recording and playback are not currently functional with SK8V. Support is planned for a future update.
+-**Teleporting while skating:** Teleporting directly while Skate mode is active may cause the skater to fall through the map. Switch back to GTA control before teleporting, then resume skating at your destination.
 - **GTA V Enhanced:** SK8V currently supports GTA V Legacy only. Enhanced Edition compatibility is a long-term goal, but may require significant additional work and is not guaranteed.
 
 ## Controls
