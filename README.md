@@ -4,7 +4,6 @@
 
 **Skate 3 gameplay. GTA V's open world.**
 
-<!-- Hero GIF: Franklin grinding a rail, hard cut to Trevor firing a minigun on the board. -->
 
 SK8V brings *Skate 3*'s Flick-It controls, board/skater physics, grinds, manuals, skitching, tricks, combos, bails, scoring, and Hall of Meat into **GTA V Legacy Story Mode**. Skate's gameplay runs alongside GTA's characters, traffic, weapons, radio, and world interactions. Skate 3’s own audio engine runs inside GTA’s mixer, so wheels sound different on every GTA surface. Things like concrete, asphalt, wood, metal, tile all sound different, and your wheels click over the cracks and seams in the pavement, with almost complete coverage.
 
