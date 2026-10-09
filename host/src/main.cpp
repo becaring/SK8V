@@ -80,6 +80,7 @@ struct Config {
     float airTimeLimit = 30.0f;    // AirTimeLimit: seconds airborne before Skate returns you to a checkpoint; 0 none, -1 Skate's own
     float skitchStandoff = 0.3f;   // SkitchStandoff: metres behind a car's rear the skitch grab line sits (0 on the bodywork)
     bool lipRule = true;           // LipRule=1: stall on a ramp lip only riding up slowly; 0 retail grind admission
+    int difficulty = 0;            // Difficulty=Easy|Normal|Hardcore|Motorized: Skate 3's physics_mode (index)
     int skaterTriangles = 3000;
     bool dynamicWorld = true;
     float dynamicRadius = 35.0f;
@@ -181,6 +182,8 @@ void Store(Config& c, const std::string& v) { Parse(v, c.*Field); }
 // "0" turns a speech list off; anything else is the list.
 std::string Speech(const std::string& v) { return v == "0" ? "" : v; }
 
+const char* const kDifficulties[] = {"Easy", "Normal", "Hardcore", "Motorized"};
+
 const Key kKeys[] = {
     {"DataRoot", Store<&Config::dataRoot>},
     {"WorldCache", Store<&Config::worldCache>},
@@ -209,6 +212,11 @@ const Key kKeys[] = {
     {"BailTimeLimit", Store<&Config::bailTimeLimit>},
     {"AirTimeLimit", Store<&Config::airTimeLimit>},
     {"LipRule", Store<&Config::lipRule>},
+    {"Difficulty", [](Config& c, const std::string& v) {
+         c.difficulty = 0;
+         for (int i = 0; i < 4; ++i)
+             if (menu::SameText(v, kDifficulties[i])) c.difficulty = i;
+     }},
     {"SkitchStandoff", Store<&Config::skitchStandoff>},
     {"SkaterTriangles", Store<&Config::skaterTriangles>},
     {"DynamicWorld", Store<&Config::dynamicWorld>},
@@ -2126,6 +2134,9 @@ std::vector<menu::Page> MenuPages(Session& s) {
     pages.push_back({"Skating", {
         Action("Skate on / off", [] { g_toggleRequested.store(true); }),
         Choice("Stance", "Stance", {"Regular", "Goofy"}, {"Regular", "Goofy"}, {}, true),
+        Choice("Difficulty", "Difficulty", {"Easy", "Normal", "Hardcore", "Motorized"},
+               {"Easy", "Normal", "Hardcore", "Motorized (RB motor, no bad-landing bails)"},
+               Bound("Difficulty", [] { g_runtime.SetDifficulty(g_config.difficulty); })),
         Flag("Ramp lip rule", "LipRule", D.lipRule, Bound("LipRule", [] { g_runtime.SetLipRule(g_config.lipRule); })),
         Number("Air time limit", "AirTimeLimit", D.airTimeLimit, -1, 120, 5, LimitText,
                Bound("AirTimeLimit", [] { g_runtime.SetAirLimit(g_config.airTimeLimit); })),
@@ -2291,6 +2302,8 @@ void ScriptMain() {
         physlevel::Start(Log, [](std::uintptr_t table, std::uintptr_t lo, std::uintptr_t hi) { g_runtime.SetPhysicsLevel(table, lo, hi); });
         Logf("SkateV Legacy: ramp lips %s (%s)", cfg.lipRule ? "SkateV rule" : "retail",
              g_runtime.SetLipRule(cfg.lipRule) ? "runtime option present" : "runtime option absent");
+        Logf("SkateV Legacy: difficulty %s (%s)", kDifficulties[cfg.difficulty],
+             g_runtime.SetDifficulty(cfg.difficulty) ? "runtime option present" : "runtime option absent");
         g_runtime.SetVerboseLog(cfg.verboseLog);
     }
 

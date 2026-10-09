@@ -31,6 +31,9 @@ BailTimeLimit=0
 ; AirTimeLimit: seconds you may stay airborne before Skate returns you to your last spot (it guards against falling
 ;   through the world). Default 30 covers GTA's tallest drops; 0 = no limit; -1 = Skate 3's own. Kept across reinstalls.
 AirTimeLimit=30
+; Difficulty: Skate 3's own modes. Easy (auto-push, assisted flips and spins, wide grind lock), Normal, Hardcore
+;   (tight grind lock, no assists), Motorized (RB runs a motor; bad landings never bail). Kept across reinstalls.
+Difficulty=Easy
 ; LipRule: 1 = a rolling board stalls on a ramp lip or coping only when riding up into it slowly; dropping in and
 ;   carrying speed over a lip never catch the trucks (ollie onto it to grind). 0 = Skate 3's own. Kept across reinstalls.
 LipRule=1

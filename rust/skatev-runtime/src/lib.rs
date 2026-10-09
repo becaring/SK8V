@@ -1019,6 +1019,16 @@ pub unsafe extern "C" fn sv_set_air_limit(rt: *mut c_void, seconds: f32) -> u32 
     })
 }
 
+/// Skate 3's difficulty (overlay patch 0043): 0 easy, 1 normal, 2 hardcore,
+/// 3 motorized; applied live and to every later session. Returns 1 when queued.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_set_difficulty(rt: *mut c_void, index: u32) -> u32 {
+    guard(0, || {
+        let Some(rt) = (unsafe { runtime(rt) }) else { return 0 };
+        (index < 4 && rt.jobs.send(Job::Difficulty(index)).is_ok()) as u32
+    })
+}
+
 /// The SkateV ramp-lip rule (overlay patch 0033): nonzero (the default) lets
 /// a rolling board stall on a lip only riding up into it slowly; 0 restores
 /// retail grind admission. Returns 1 when queued.

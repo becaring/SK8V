@@ -35,7 +35,7 @@ NEW, OLD = '.sk8v-new', '.sk8v-old'
 DATA = 'SK8V'  # the prepared data (tools/prepare.py), a folder in the GTA folder
 # INI keys the in-game menu saves: a reinstall keeps the player's value.
 MENU_KEYS = [
-    'LipRule', 'AirTimeLimit', 'BailTimeLimit', 'SkitchStandoff', 'GtaDelegation', 'SwimDepth', 'PutAwayHoldMs',
+    'Difficulty', 'LipRule', 'AirTimeLimit', 'BailTimeLimit', 'SkitchStandoff', 'GtaDelegation', 'SwimDepth', 'PutAwayHoldMs',
     'BoardAim', 'GunIK', 'GunProbe', 'AimTwist', 'CameraFovScale', 'HallOfMeat', 'HallOfMeatMetrics',
     'HallOfMeatXray', 'BailPain', 'GetUpSpeech', 'NearMissSpeech', 'DynamicWorld', 'DynamicRadius', 'PedHitboxes',
     'PedLaunch', 'PedLaunchScale', 'PedLaunchLift', 'PedLaunchSpin', 'PedGetUpSpeech', 'VehicleDamage',

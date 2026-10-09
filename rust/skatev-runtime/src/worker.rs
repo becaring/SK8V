@@ -73,6 +73,7 @@ pub enum Job {
     AirLimit(Option<f32>),
     /// The SkateV ramp-lip rule (patch 0033; false: retail admission).
     LipRule(bool),
+    Difficulty(u32),
     /// Metres behind a car's rear the skitch grab line sits.
     SkitchStandoff(f32),
     /// Play a showcase line (`line.rs`) from its start while skating.
@@ -640,6 +641,7 @@ fn run(
     let mut bail_limit: Option<f32> = None;
     let mut air_limit: Option<f32> = None;
     let mut lip_rule = true;
+    let mut difficulty = 0u32;
     let mut last_speed = 0.0f32;
     let mut last_root = bevy_math::Vec3::ZERO;
     let mut perf = Perf::new();
@@ -705,7 +707,7 @@ fn run(
             };
             match result {
                 Ok(mut s) => {
-                    apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule);
+                    apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty);
                     session = Some(s);
                     life(shared, |l| {
                         l.session_builds += 1;
@@ -754,7 +756,7 @@ fn run(
                             shared,
                             log,
                         )?;
-                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule);
+                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty);
                         builder_jobs = Some(sender);
                         session = Some(s);
                         audio_state = crate::audio::map::State::default();
@@ -905,6 +907,18 @@ fn run(
                     lip_rule = on;
                     if let Some(s) = session.as_mut() {
                         s.set_lip_rule(on);
+                    }
+                }
+                Job::Difficulty(index) => {
+                    const NAMES: [&str; 4] = ["easy", "normal", "hardcore", "motorized"];
+                    let Some(name) = NAMES.get(index as usize) else {
+                        log(&format!("difficulty: unknown index {index}, unchanged"));
+                        continue;
+                    };
+                    log(&format!("difficulty: {name}"));
+                    difficulty = index;
+                    if let Some(s) = session.as_mut() {
+                        s.set_difficulty(index);
                     }
                 }
                 Job::PhysicsLevel(level) => pending_live = Some(level),
@@ -1091,7 +1105,7 @@ fn run(
                     log,
                 ) {
                     Ok((mut s, sender)) => {
-                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule);
+                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty);
                         builder_jobs = Some(sender);
                         session = Some(s);
                         audio_state = crate::audio::map::State::default();
@@ -1619,8 +1633,9 @@ fn life(shared: &Mutex<Shared>, f: impl FnOnce(&mut LifecycleShared)) {
 
 /// The host settings a new session starts with; later changes are applied
 /// by their jobs (plain session fields, kept across activations).
-fn apply_settings(s: &mut Session, hall_of_meat: bool, bail: Option<f32>, air: Option<f32>, lip: bool) {
+fn apply_settings(s: &mut Session, hall_of_meat: bool, bail: Option<f32>, air: Option<f32>, lip: bool, difficulty: u32) {
     s.set_hall_of_meat(hall_of_meat);
+    s.set_difficulty(difficulty);
     s.set_bail_maximum_time(bail);
     s.set_air_time_limit(air);
     s.set_lip_rule(lip);

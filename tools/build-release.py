@@ -3,7 +3,12 @@ the preparation tools, the pinned donor tools snapshot, the shipped world
 sidecars, licenses and notices. Nothing retail: every file is listed here, and
 a final scan refuses Skate or GTA data formats.
 
-    python tools/build-release.py --version 1.0
+    python tools/build-release.py --version 1.0 [--update]
+
+--update also writes SK8V-<version>-update.zip for players who already ran
+setup: the ASI and the runtime, to copy over the installed ones, with the
+license files. Only for a release whose setup output is unchanged (no stage
+script, shipped sidecar or data format changed); otherwise players rerun setup.
 
 Build first (build-rust.ps1, build-host.ps1, build-rage-cli.ps1; the ped
 export and world cache tools with cargo). rustc keeps source paths in
@@ -96,6 +101,7 @@ def donor_tools(out):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--version', required=True)
+    ap.add_argument('--update', action='store_true', help='also the ASI-and-runtime update zip')
     a = ap.parse_args()
     remap_config()
     out = REPO / f'build/release/SK8V-{a.version}'
@@ -131,6 +137,26 @@ def main():
             if p.is_file():
                 z.write(p, Path(out.name) / p.relative_to(out))
     print(f'{len(shipped) + 1} files -> {archive} ({archive.stat().st_size / 2**20:.0f} MB)')
+    if a.update:
+        update(out, a.version)
+
+
+def update(out, version):
+    """The update zip, laid out as the GTA folder (setup_engine.install puts both binaries at its root)."""
+    files = {'SkateVLegacy.asi': 'build/package/SkateVLegacy.asi', 'SkateVRuntime.dll': 'build/package/SkateVRuntime.dll',
+             'LICENSE.txt': 'LICENSE', 'NOTICE.txt': 'NOTICE', 'THIRD-PARTY-NOTICES.txt': 'THIRD-PARTY-NOTICES.txt'}
+    readme = '\r\n'.join([
+        f'SK8V {version} update', '',
+        'For a GTA V folder where SK8V setup already finished. Close GTA V, then copy SkateVLegacy.asi and',
+        'SkateVRuntime.dll into the GTA V folder (beside GTA5.exe), replacing the old ones. Your settings and',
+        'prepared data stay as they are.', '',
+        'Setup never finished? Use the full SK8V zip instead: its setup picks up where the last one stopped.', ''])
+    archive = out.parent / f'SK8V-{version}-update.zip'
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:
+        for name, src in files.items():
+            z.write(out / src, name)
+        z.writestr('README-UPDATE.txt', readme)
+    print(f'update: {len(files) + 1} files -> {archive} ({archive.stat().st_size / 2**20:.1f} MB)')
 
 
 if __name__ == '__main__':

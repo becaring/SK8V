@@ -3,7 +3,7 @@ the rage CLI. Replaces the extract-gta-*.ps1 / export-peds.ps1 passes for
 setup; the output layouts are the same, so the build tools read either.
 
     keys(rage, gta, out)                 GTA's keys, from GTA5.exe
-    placements(rage, keys, gta, out)     ymap/ytyp/props per layer (local/gta-meta layout)
+    placements(rage, keys, gta, out)     ytyp and prop/interior models per layer (local/gta-meta layout)
     vehicles(...)                        vehicle .yft and handling/vehicles.meta per archive
                                          (local/gta-vehyft and local/gta-vehdata layouts)
     weapon_meta(...)                     update.rpf weapons/weaponanimations.meta (local/gta-weapon-meta)
@@ -16,13 +16,13 @@ import os
 import re
 import shutil
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from _common import REPO
 
 PLAYERS = ('player_zero', 'player_one', 'player_two')
-JOBS = min(12, os.cpu_count() or 4)  # rage processes at once
+JOBS = min(12, os.cpu_count() or 4)  # rage processes at once (throttle lowers it on a hard disk)
 
 
 class ExtractError(Exception):
@@ -72,14 +72,52 @@ def layers(rage, keys, gta, scratch):
     return out
 
 
-PLACEMENT_PATTERNS = ['*.ymap', '*.ytyp', '*/props/*.ydr', '*/props/*.ydd', '*/props/*.yft', '*/interiors/*.ydr',
-                      '*/interiors/*.ydd', '*trailer*.yft', '*_manifest.ymf']
+# Only what world-cache --templates reads: archetypes, drawables and fragments. Live collision replaced the
+# static map, so no .ymap / .ymf (placements) and no .ydd (the templates read .ydr only).
+PLACEMENT_PATTERNS = ['*.ytyp', '*/props/*.ydr', '*/props/*.yft', '*/interiors/*.ydr', '*trailer*.yft']
 
 
-def parallel(fn, items):
-    """fn over items, several rage processes at once (rage itself is single-threaded)."""
+def seek_penalty(path):
+    """True if path's drive is a spinning disk (Windows' seek-penalty query); False if not or unknown."""
+    import ctypes as C
+    import ctypes.wintypes as W
+    drive = os.path.splitdrive(os.path.abspath(path))[0]
+    if len(drive) != 2:  # a UNC path: no volume to ask
+        return False
+    k32 = C.WinDLL('kernel32')
+    k32.CreateFileW.restype = W.HANDLE
+    h = k32.CreateFileW('\\\\.\\' + drive, 0, 3, None, 3, 0, None)  # no access needed for the query
+    if h in (None, W.HANDLE(-1).value):
+        return False
+    try:
+        query = (C.c_uint32 * 3)(7, 0, 0)  # StorageDeviceSeekPenaltyProperty, PropertyStandardQuery
+        out, n = (C.c_uint32 * 3)(), W.DWORD()
+        ok = k32.DeviceIoControl(W.HANDLE(h), 0x2D1400, query, C.sizeof(query), out, C.sizeof(out), C.byref(n), None)
+        return bool(ok) and n.value >= 9 and bool(out[2] & 0xFF)  # DEVICE_SEEK_PENALTY_DESCRIPTOR.IncursSeekPenalty
+    finally:
+        k32.CloseHandle(W.HANDLE(h))
+
+
+def throttle(*paths):
+    """Two rage processes when the GTA install or the output is on a hard disk: twelve at once
+    make the heads seek between archives and run far slower than one after another."""
+    global JOBS
+    slow = [str(p) for p in paths if seek_penalty(p)]
+    if slow:
+        JOBS = min(JOBS, 2)
+    return slow
+
+
+def parallel(fn, items, progress=None):
+    """fn over items, several rage processes at once (rage itself is single-threaded);
+    progress(fraction done) after each one."""
     with ThreadPoolExecutor(JOBS) as pool:
-        return list(pool.map(fn, items))
+        futures = [pool.submit(fn, i) for i in items]
+        for n, f in enumerate(as_completed(futures), 1):
+            f.result()
+            if progress:
+                progress(n / len(futures))
+        return [f.result() for f in futures]
 
 
 def warm(*roots):
@@ -88,14 +126,16 @@ def warm(*roots):
     read stalls (the templates read took 64 s instead of 21 s); a parallel pass
     just before costs about 10 s and hides it. Done earlier, it does not help."""
     files = [p for root in roots for p in Path(root).rglob('*') if p.is_file()]
-    with ThreadPoolExecutor(16) as pool:
+    with ThreadPoolExecutor(16 if JOBS > 2 else JOBS) as pool:
         list(pool.map(lambda p: len(p.read_bytes()), files))
 
 
-def placements(rage, keys, gta, out, log=print):
+def placements(rage, keys, gta, out, log=print, progress=None):
     """base/<rpf>/... for every top-level archive, layers/<NN>_<layer>/... with
-    each patch pack's content.xml and setup2.xml, and layers.txt."""
+    each patch pack's content.xml and setup2.xml, and layers.txt. Starts from an
+    empty out: an older or interrupted run's files would be read as current."""
     gta, out = Path(gta), Path(out)
+    shutil.rmtree(out, ignore_errors=True)
     jobs = [(a, out / 'base' / a.stem, False) for a in sorted(gta.glob('*.rpf'))]
     names = []
     for i, (name, archive) in enumerate(layers(rage, keys, gta, out / '_meta')):
@@ -107,7 +147,7 @@ def placements(rage, keys, gta, out, log=print):
         extract(rage, keys, archive, PLACEMENT_PATTERNS, dest)
         if rules:  # world-cache applies only archives an active change set enables
             run(rage, 'extract', archive, 'content.xml', 'setup2.xml', '-o', dest, keys=keys)
-    parallel(one, sorted(jobs, key=lambda j: -j[0].stat().st_size))  # the biggest archive is the floor: start it first
+    parallel(one, sorted(jobs, key=lambda j: -j[0].stat().st_size), progress)  # the biggest archive is the floor: start it first
     (out / 'layers.txt').write_text('\n'.join(names) + '\n', encoding='ascii')
     log(f'placements from {len(jobs)} archives')
 
@@ -126,7 +166,7 @@ def vehicle_archives(gta):
 FRAGMENTS, META = ['*vehicles*.yft'], ['*handling.meta', '*vehicles.meta']
 
 
-def vehicles(rage, keys, gta, fragments, meta, log=print):
+def vehicles(rage, keys, gta, fragments, meta, log=print, progress=None):
     """One pass per archive: vehicle .yft (not the render-only _hi variants)
     under <fragments>/<layer>/, handling.meta and vehicles.meta under
     <meta>/<layer>/ (build-vehicle-masses.py)."""
@@ -155,7 +195,7 @@ def vehicles(rage, keys, gta, fragments, meta, log=print):
             f.replace(dest)
         shutil.rmtree(tmp, ignore_errors=True)
         return kept
-    kept = sum(parallel(one, jobs))
+    kept = sum(parallel(one, jobs, progress))
     log(f'vehicles: {kept} fragments, {sum(1 for _ in meta.rglob("*.meta"))} meta files from {len(jobs)} archives')
 
 
@@ -168,7 +208,7 @@ def weapon_meta(rage, keys, gta, out):
     return ai
 
 
-def ped_models(rage, keys, gta, out, log=print):
+def ped_models(rage, keys, gta, out, log=print, progress=None):
     """<out>/models/cdimages/streamedpeds_players.rpf (the three players) and
     <out>/skeletons (every ped .yft in the install, for skeleton-only entries)."""
     gta, out = Path(gta), Path(out)
@@ -178,7 +218,7 @@ def ped_models(rage, keys, gta, out, log=print):
     shutil.rmtree(tmp, ignore_errors=True)
     jobs = [(gta / 'x64v.rpf', [f'*streamedpeds_players.rpf/{p}*' for p in PLAYERS], out)]
     jobs += [(a, ['*peds*.rpf/*.yft'], tmp / f'{i:03d}') for i, a in enumerate(archives)]
-    parallel(lambda j: extract(rage, keys, *j), jobs)
+    parallel(lambda j: extract(rage, keys, *j), jobs, progress)
     # merge in archive order, so a name in two archives resolves as a sequential extraction would (later wins)
     skeletons = out / 'skeletons'
     for part in sorted(tmp.iterdir()) if tmp.exists() else []:
@@ -199,6 +239,7 @@ def main():
     ap.add_argument('--rage', type=Path, default=REPO / 'build/tools/rage.exe')
     ap.add_argument('--only', choices=['placements', 'vehicles', 'weapon-meta', 'peds'])
     a = ap.parse_args()
+    throttle(a.gta, a.out)
     k = keys(a.rage, a.gta, a.out / 'gta-keys')
     parts = {'placements': lambda: placements(a.rage, k, a.gta, a.out / 'gta-meta'),
              'vehicles': lambda: vehicles(a.rage, k, a.gta, a.out / 'gta-vehyft', a.out / 'gta-vehdata'),

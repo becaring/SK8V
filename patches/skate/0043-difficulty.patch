@@ -1,0 +1,72 @@
+diff --git a/crates/skate-host/src/difficulty.rs b/crates/skate-host/src/difficulty.rs
+index ee6c82d..be28756 100644
+--- a/crates/skate-host/src/difficulty.rs
++++ b/crates/skate-host/src/difficulty.rs
+@@ -12,16 +12,19 @@ pub(crate) enum Difficulty {
+     Easy = 0,
+     Normal = 1,
+     Hardcore = 2,
++    /// Retail's motorized physics_mode (SkateV, overlay patch 0043): the motor
++    /// drives the board to MotorTopSpeed and bad landings never bail.
++    Motorized = 3,
+ }
+ impl Difficulty {
+-    pub const ALL: [Self; 3] = [Self::Easy, Self::Normal, Self::Hardcore];
++    pub const ALL: [Self; 4] = [Self::Easy, Self::Normal, Self::Hardcore, Self::Motorized];
+     pub fn key(self) -> &'static str { NATIVE_MODES[self as usize] }
+     pub fn label(self) -> &'static str {
+-        match self { Self::Easy => "Easy", Self::Normal => "Normal", Self::Hardcore => "Hardcore" }
++        match self { Self::Easy => "Easy", Self::Normal => "Normal", Self::Hardcore => "Hardcore", Self::Motorized => "Motorized" }
+     }
+     pub fn parse(value: &str) -> Result<Self, String> {
+         Self::ALL.into_iter().find(|d| d.key().eq_ignore_ascii_case(value))
+-            .ok_or_else(|| format!("Unknown difficulty {value:?}; expected easy, normal or hardcore"))
++            .ok_or_else(|| format!("Unknown difficulty {value:?}; expected easy, normal, hardcore or motorized"))
+     }
+     pub fn path(root: &Path) -> PathBuf {
+         root.parent().unwrap_or(root).join("settings/gameplay.json")
+@@ -55,7 +58,8 @@ mod tests {
+             let bytes = serde_json::to_vec(&Saved { difficulty: d }).unwrap();
+             assert_eq!(serde_json::from_slice::<Saved>(&bytes).unwrap().difficulty, d);
+         }
+-        assert!(Difficulty::parse("motorized").is_err());
++        assert_eq!(Difficulty::parse("motorized").unwrap(), Difficulty::Motorized);
++        assert!(Difficulty::parse("test").is_err());
+         assert!(serde_json::from_str::<Saved>(r#"{"difficulty":"made-up"}"#).is_err());
+     }
+ }
+diff --git b/crates/skate-host/src/physics/bridge/difficulty.rs b/crates/skate-host/src/physics/bridge/difficulty.rs
+new file mode 100644
+index 0000000..1c7fd62
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/difficulty.rs
+@@ -0,0 +1,17 @@
++//! SkateV difficulty (overlay patch 0043): selects one of retail's physics_mode
++//! collections (easy, normal, hardcore, motorized) on a live session. Every
++//! per-mode table is loaded for all modes and picked by this index each frame.
++use super::Session;
++use crate::difficulty::Difficulty;
++
++impl Session {
++    /// 0 easy, 1 normal, 2 hardcore, 3 motorized. False (unchanged) otherwise.
++    pub fn set_difficulty(&mut self, index: u32) -> bool {
++        let Some(d) = Difficulty::ALL.get(index as usize) else { return false };
++        self.physics.set_difficulty(*d);
++        true
++    }
++    pub fn difficulty(&self) -> u32 {
++        self.physics.difficulty_index()
++    }
++}
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index 8b61ba3..c7d008f 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -10,6 +10,7 @@ pub mod skitch;
+ pub mod hom;
+ pub mod hud;
+ pub mod lips;
++pub mod difficulty;
+ pub use super::host_bodies::{CHARACTER_GROUP, HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+ 
+ /// Synthetic HOST regression for the shared moving-entity query boundary.

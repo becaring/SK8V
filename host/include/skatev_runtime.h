@@ -320,6 +320,11 @@ using SvSetAirLimitFn = std::uint32_t(__cdecl*)(void*, float);
 // admission. Returns 1 when queued. Export: sv_set_lip_rule.
 using SvSetLipRuleFn = std::uint32_t(__cdecl*)(void*, std::uint32_t);
 
+// sv_set_difficulty(rt, index): Skate 3's physics_mode, 0 easy, 1 normal,
+// 2 hardcore, 3 motorized; live and for later sessions. Returns 1 when queued.
+// Export: sv_set_difficulty.
+using SvSetDifficultyFn = std::uint32_t(__cdecl*)(void*, std::uint32_t);
+
 // sv_set_verbose_log(rt, enabled): nonzero writes the periodic lines (perf,
 // skater trace, collision streaming) to the runtime log. Returns 1.
 // Export: sv_set_verbose_log.

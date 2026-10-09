@@ -97,7 +97,8 @@ class Prepare:
             ('hom-hud', 'skate', ['prepare-hom-hud.py'], self.stage_hom_hud),
             ('hom-xray', 'skate', ['prepare-hom-xray.py'], lambda: py('prepare-hom-xray.py', '--game', self.disc, '--assets', self.assets)),
             ('board', 'skate', ['prepare-board.py'], lambda: py('prepare-board.py', '--assets', self.assets)),
-            ('gta-placements', 'gta', ['gta_extract.py'], lambda: gta_extract.placements(RAGE, self.keys, self.gta, self.work / 'gta-meta')),
+            ('gta-placements', 'gta', ['gta_extract.py'], lambda: gta_extract.placements(
+                RAGE, self.keys, self.gta, self.work / 'gta-meta', progress=self.within('gta-placements'))),
             ('board-native', 'join', ['prepare-board-native.py'], lambda: py(
                 'prepare-board-native.py', '--board', self.assets / 'private/board/board-materials.json',
                 '--lighting', self.assets / 'private/character-lighting.json',
@@ -136,7 +137,8 @@ class Prepare:
         py('ped_collider_templates.py', out, out / 'runtime', RAGE)
 
     def stage_vehicles(self):
-        gta_extract.vehicles(RAGE, self.keys, self.gta, self.work / 'gta-vehyft', self.work / 'gta-vehdata')
+        gta_extract.vehicles(RAGE, self.keys, self.gta, self.work / 'gta-vehyft', self.work / 'gta-vehdata',
+                             progress=self.within('gta-vehicles'))
         py('build-vehicle-masses.py', self.work / 'gta-vehdata', self.masses)
 
     def stage_world(self):
@@ -153,7 +155,8 @@ class Prepare:
             shutil.copyfile(SHIPPED_WORLD / 'crackmaps.svgj', self.world.parent / 'crackmaps.svgj')
 
     def stage_peds(self):
-        players, skeletons = gta_extract.ped_models(RAGE, self.keys, self.gta, self.work / 'gta-peds')
+        players, skeletons = gta_extract.ped_models(RAGE, self.keys, self.gta, self.work / 'gta-peds',
+                                                    progress=self.within('peds', 0.8))
         for ped in gta_extract.PLAYERS:
             exe('skatev-ped-export.exe', players, ped, self.peds)
         exe('skatev-ped-export.exe', '--skeletons', skeletons, self.peds)
@@ -217,7 +220,11 @@ class Prepare:
             raise SystemExit(f'--redo: no stage {self.a.redo}')
         chain = lambda c: [s for s in stages if s[1] == c]
         self.left = [s[0] for s in stages] + ['install' if self.a.install else None]
+        self.part = {}
         self.step(None)
+        slow = gta_extract.throttle(self.gta, self.out)
+        if slow:
+            print(f'hard disk ({", ".join(slow)}): reading GTA archives {gta_extract.JOBS} at a time', flush=True)
         with ThreadPoolExecutor(2) as pool:
             ran = list(pool.map(self.run_chain, [chain('skate'), chain('gta')]))
         self.run_chain(chain('join'), force=any(ran))
@@ -249,9 +256,18 @@ class Prepare:
         weight = lambda names: sum(STEPS.get(n, (1,))[0] for n in names if n)
         if done is None:
             self.total = weight(self.left)
-        else:
+        elif done:  # '': a stage moved within (within)
             self.left.remove(done)  # list.remove is atomic under the GIL; the two chains share it
-        print(f'@progress {100 - 100 * weight(self.left) // self.total}', flush=True)
+            self.part.pop(done, None)
+        left = weight(self.left) - sum(STEPS[n][0] * f for n, f in list(self.part.items()))
+        print(f'@progress {int(100 - 100 * left / self.total)}', flush=True)
+
+    def within(self, name, share=1.0):
+        """progress(fraction) for a long stage: moves the bar inside it (share: the part of the stage it covers)."""
+        def progress(f):
+            self.part[name] = f * share
+            self.step('')
+        return progress
 
     def plan(self):
         files = {'SkateVLegacy.asi': PACKAGE / 'SkateVLegacy.asi', 'SkateVRuntime.dll': PACKAGE / 'SkateVRuntime.dll',

@@ -50,6 +50,7 @@ public:
     bool SetBailLimit(float seconds);
     bool SetAirLimit(float seconds);
     bool SetLipRule(bool enabled);
+    bool SetDifficulty(int index);
     bool SetVerboseLog(bool enabled);
     bool SetSkitchStandoff(float metres);
     int SkitchVehicle() const;
@@ -88,6 +89,7 @@ private:
     SvSetBailLimitFn setBailLimit_ = nullptr;
     SvSetAirLimitFn setAirLimit_ = nullptr;
     SvSetLipRuleFn setLipRule_ = nullptr;
+    SvSetDifficultyFn setDifficulty_ = nullptr;
     SvSetVerboseLogFn setVerboseLog_ = nullptr;
     SvSetSkitchStandoffFn setSkitchStandoff_ = nullptr;
     SvSkitchVehicleFn skitchVehicle_ = nullptr;
