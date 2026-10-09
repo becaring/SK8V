@@ -216,9 +216,17 @@ def ped_models(rage, keys, gta, out, log=print, progress=None):
     archives = sorted({m.group(1) for m in re.finditer(r'^(.+?\.rpf):', hits, re.M)})
     tmp = out / '.tmp'
     shutil.rmtree(tmp, ignore_errors=True)
-    jobs = [(gta / 'x64v.rpf', [f'*streamedpeds_players.rpf/{p}*' for p in PLAYERS], out)]
-    jobs += [(a, ['*peds*.rpf/*.yft'], tmp / f'{i:03d}') for i, a in enumerate(archives)]
-    parallel(lambda j: extract(rage, keys, *j), jobs, progress)
+    players = (gta / 'x64v.rpf', [f'*streamedpeds_players.rpf/{p}*' for p in PLAYERS], out)
+    jobs = [players] + [(a, ['*peds*.rpf/*.yft'], tmp / f'{i:03d}') for i, a in enumerate(archives)]
+
+    def one(job):
+        if job is players:
+            return extract(rage, keys, *job)
+        try:  # an unreadable pack (a damaged or modded DLC) costs only its own peds' skeletons
+            extract(rage, keys, *job, partial_ok=True)
+        except ExtractError as e:
+            log(f'ped skeletons: skipped {job[0]}: {e}')
+    parallel(one, jobs, progress)
     # merge in archive order, so a name in two archives resolves as a sequential extraction would (later wins)
     skeletons = out / 'skeletons'
     for part in sorted(tmp.iterdir()) if tmp.exists() else []:
