@@ -137,7 +137,16 @@ def vehicles(rpf, keys, gta, meta, log=print, progress=None):
     gta, meta = Path(gta), Path(meta)
     shutil.rmtree(meta, ignore_errors=True)
     jobs = [('00_common', gta / 'common.rpf')] + vehicle_archives(gta)
-    parallel(lambda job: extract(rpf, keys, job[1], META, meta / job[0], partial_ok=True), jobs, progress)
+
+    def one(job):
+        layer, archive = job
+        try:
+            extract(rpf, keys, archive, META, meta / layer, partial_ok=True)
+        except ExtractError as e:  # a damaged or truncated pack costs only its own vehicles, as in the game
+            if layer == '00_common':
+                raise
+            log(f'vehicles: skipped {archive}: {e}')
+    parallel(one, jobs, progress)
     log(f'vehicles: {sum(1 for _ in meta.rglob("*.meta"))} meta files from {len(jobs)} archives')
 
 
