@@ -15,8 +15,8 @@ use std::path::Path;
 /// Top-level archive paths (`x64/levels/gta5/.../name.rpf`, lower case) the
 /// pack enables, or `None` when the layer is not a DLC pack.
 pub fn enabled(layer: &Path) -> Option<HashSet<String>> {
-    let content = std::fs::read_to_string(layer.join("content.xml")).ok()?;
-    let setup = std::fs::read_to_string(layer.join("setup2.xml")).ok()?;
+    let content = crate::vfs::read_to_string(layer.join("content.xml")).ok()?;
+    let setup = crate::vfs::read_to_string(layer.join("setup2.xml")).ok()?;
     Some(parse(&content, &setup))
 }
 

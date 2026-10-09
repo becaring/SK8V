@@ -21,6 +21,10 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 fn fragments(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if let Some(files) = crate::vfs::files_sorted(dir) {
+        out.extend(files.into_iter().filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("yft"))));
+        return Ok(());
+    }
     let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
@@ -138,13 +142,19 @@ pub fn write(cache: &Path, root: &Path, masses: &Path) -> Result<(), Box<dyn Err
         })
         .collect();
     // Layer order: directory names sort as the game applies them.
-    let mut layers: Vec<_> = std::fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()?;
-    layers.retain(|e| e.path().is_dir());
-    layers.sort_by_key(|e| e.file_name());
+    let layers = match crate::vfs::top_dirs() {
+        Some(dirs) => dirs,
+        None => {
+            let mut layers: Vec<_> = std::fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()?;
+            layers.retain(|e| e.path().is_dir());
+            layers.sort_by_key(|e| e.file_name());
+            layers.into_iter().map(|e| e.path()).collect()
+        }
+    };
     let mut chosen: BTreeMap<u32, PathBuf> = BTreeMap::new();
     for layer in &layers {
         let mut files = Vec::new();
-        fragments(&layer.path(), &mut files)?;
+        fragments(layer, &mut files)?;
         for f in files {
             let name = stem(&f);
             if name.ends_with("_hi") {

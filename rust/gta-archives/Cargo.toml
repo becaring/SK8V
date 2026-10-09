@@ -1,0 +1,17 @@
+[package]
+name = "gta-archives"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "gta_archives"
+
+[[bin]]
+name = "sk8v-rpf"
+path = "src/main.rs"
+
+[dependencies]
+rpf-archive = { path = "../../upstream/rpf-archive-rs" }
+memmap2 = "0.9.11"
+anyhow = "1"

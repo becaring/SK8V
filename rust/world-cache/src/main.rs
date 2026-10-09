@@ -25,6 +25,7 @@ mod primitives;
 mod props;
 mod vegetation;
 mod vehicles;
+mod vfs;
 
 use rage_formats::parse_ybn;
 use std::{
@@ -160,7 +161,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Collision coverage audit of every placement (no cache is written):
     //   skatev-world-cache --audit-props META [x y z radius]
     {
-        let a: Vec<String> = env::args().skip(1).collect();
+        let mut a: Vec<String> = env::args().skip(1).collect();
+        // --templates / --vehicle-bounds reading GTA's archives in place
+        // (vfs.rs) instead of an extracted META / FRAGMENTS folder:
+        //   skatev-world-cache --templates-gta CACHE.svwc GTA KEYS [VEHICLE_MASSES]
+        //   skatev-world-cache --vehicle-bounds-gta CACHE.svwc GTA KEYS VEHICLE_MASSES
+        if let Some(mode) = a.first().and_then(|f| f.strip_suffix("-gta")).map(str::to_string) {
+            let (Some(gta), Some(keys)) = (a.get(2).map(PathBuf::from), a.get(3).map(PathBuf::from)) else {
+                return Err(format!("{mode}-gta CACHE.svwc GTA KEYS ...").into());
+            };
+            let keys = gta_archives::keys(&keys).map_err(|e| e.to_string())?;
+            match mode.as_str() {
+                "--templates" => vfs::mount_placements(&gta, keys)?,
+                "--vehicle-bounds" => vfs::mount_vehicles(&gta, keys)?,
+                _ => return Err(format!("unknown mode {mode}-gta").into()),
+            }
+            a.splice(0..4, [mode, a[1].clone(), vfs::ROOT.to_string()]);
+        }
         if a.first().is_some_and(|f| f == "--fragment-masses") {
             // skatev-world-cache --fragment-masses FILE.yft...
             for f in &a[1..] {

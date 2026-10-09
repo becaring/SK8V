@@ -15,8 +15,8 @@ from _common import REPO
 
 # Workspace packages whose binaries ship (SkateVRuntime.dll, skate-xma.exe, the
 # preparation tools). Their own code is SK8V's or credited below.
-SHIPPED = ['skatev-runtime', 'skate-xma', 'skatev-ped-export', 'world-cache', 'svwc']
-OURS = {'skatev-runtime', 'skate-xma', 'skatev-ped-export', 'world-cache', 'svwc', 'skate-aems', 'skate-hud'}
+SHIPPED = ['skatev-runtime', 'skate-xma', 'skatev-ped-export', 'skatev-world-cache', 'gta-archives', 'svwc']
+OURS = {'skatev-runtime', 'skate-xma', 'skatev-ped-export', 'skatev-world-cache', 'gta-archives', 'svwc', 'skate-aems', 'skate-hud'}
 # The Skate engine crates compiled from the mashup overlay (build/overlay/skate): credited below.
 MASHUP = {'skate-core', 'skate-data', 'skate-host', 'skate-net'}
 TARGET = 'x86_64-pc-windows-msvc'

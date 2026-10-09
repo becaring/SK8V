@@ -27,21 +27,21 @@ import setup_engine
 import xiso
 
 TOOLS = REPO / 'tools'
-RAGE = REPO / 'build/tools/rage.exe'
+RAGE = REPO / 'build/tools/rage.exe'  # GTA's keys and the ped collider tools; extraction is sk8v-rpf
+RPF = 'sk8v-rpf.exe'
 # Per stage: rough seconds on a fast PC (the setup window's progress bar) and what the window shows.
 STEPS = {'disc': (20, 'Reading the Skate 3 disc'), 'convert': (17, 'Converting Skate 3 data'),
          'audio': (17, 'Converting Skate 3 audio'), 'audio-tuning': (1, 'Reading audio tuning'),
          'hom-hud': (5, 'Preparing the Hall of Meat HUD'), 'hom-xray': (1, 'Preparing the x-ray view'),
-         'board': (1, 'Preparing the board'), 'gta-placements': (40, 'Reading GTA V map placements'),
-         'gta-vehicles': (40, 'Reading GTA V vehicles'), 'world': (30, 'Building world collision'),
-         'peds': (30, 'Reading GTA V characters'), 'live-clip': (4, 'Building the board animation pack'),
+         'board': (1, 'Preparing the board'), 'gta-vehicles': (3, 'Reading GTA V vehicles'),
+         'world': (30, 'Building world collision'), 'peds': (5, 'Reading GTA V characters'), 'live-clip': (4, 'Building the board animation pack'),
          'wheel-icon': (2, 'Adding the weapon wheel icon'), 'board-native': (3, 'Building the GTA board model'),
          'ped-colliders': (2, 'Building character collision'), 'verify': (1, 'Checking the prepared data'),
          'install': (5, 'Installing into the GTA folder')}
 PACKAGE = REPO / 'build/package'
 # Dev-baked material and ground-joint sidecars shipped with the release (DECISIONS 2026-10-06).
 SHIPPED_WORLD = REPO / 'world'
-SHADER_REFERENCE = 'base/x64w/dlcpacks/mppilot/dlc.rpf/x64/levels/gta5/props/mppilot_props.rpf/pil_p_para_bag_pilot_s.ydr'
+SHADER_REFERENCE = ('x64w.rpf', 'dlcpacks/mppilot/dlc.rpf/x64/levels/gta5/props/mppilot_props.rpf/pil_p_para_bag_pilot_s.ydr')
 PED_COLLIDER_SOURCE = '88b90e3104464c947439c70764df617f9356ef4f048a3501368c4ab8a494f1b6'  # x64a.rpf z_z_fred.yft
 PACK = r'update\x64\dlcpacks\skatev'
 
@@ -97,13 +97,7 @@ class Prepare:
             ('hom-hud', 'skate', ['prepare-hom-hud.py'], self.stage_hom_hud),
             ('hom-xray', 'skate', ['prepare-hom-xray.py'], lambda: py('prepare-hom-xray.py', '--game', self.disc, '--assets', self.assets)),
             ('board', 'skate', ['prepare-board.py'], lambda: py('prepare-board.py', '--assets', self.assets)),
-            ('gta-placements', 'gta', ['gta_extract.py'], lambda: gta_extract.placements(
-                RAGE, self.keys, self.gta, self.work / 'gta-meta', progress=self.within('gta-placements'))),
-            ('board-native', 'join', ['prepare-board-native.py'], lambda: py(
-                'prepare-board-native.py', '--board', self.assets / 'private/board/board-materials.json',
-                '--lighting', self.assets / 'private/character-lighting.json',
-                '--shader-reference', self.work / 'gta-meta' / SHADER_REFERENCE, '--rage', RAGE,
-                '--out', self.assets / 'private/board-native')),
+            ('board-native', 'join', ['prepare-board-native.py'], self.stage_board_native),
             ('ped-colliders', 'join', ['prepare-ped-colliders.py', 'ped_collider_templates.py'], self.stage_ped_colliders),
             ('gta-vehicles', 'gta', ['gta_extract.py', 'build-vehicle-masses.py'], self.stage_vehicles),
             ('world', 'gta', [], self.stage_world),
@@ -121,13 +115,21 @@ class Prepare:
             return
         xiso.extract_needed(self.a.skate, self.disc)
 
+    def stage_board_native(self):
+        archive, path = SHADER_REFERENCE
+        gta_extract.extract(binary(RPF), self.keys, self.gta / archive, [path], self.work / 'shader-reference')
+        py('prepare-board-native.py', '--board', self.assets / 'private/board/board-materials.json',
+           '--lighting', self.assets / 'private/character-lighting.json',
+           '--shader-reference', self.work / 'shader-reference' / path, '--rage', RAGE,
+           '--out', self.assets / 'private/board-native')
+
     def stage_hom_hud(self):
         py('prepare-hom-hud.py', '--game', self.disc, '--assets', self.assets)
         py('prepare-hom-hud.py', '--game', self.disc, '--assets', self.assets, '--movie', 'chyron', '--gta', self.gta)
 
     def stage_ped_colliders(self):
         src = self.work / 'ped-colliders'
-        gta_extract.extract(RAGE, self.keys, self.gta / 'x64a.rpf', ['*models/z_z_fred.yft'], src)
+        gta_extract.extract(binary(RPF), self.keys, self.gta / 'x64a.rpf', ['*models/z_z_fred.yft'], src)
         yft = next(src.rglob('z_z_fred.yft'))
         policy = src / 'binding-policy.json'  # the runtime checks the live ped against the model (prepare-ped-colliders.py)
         policy.write_text(json.dumps({'source_sha256': PED_COLLIDER_SOURCE, 'binding_policy': 'require_live_asset_match',
@@ -137,17 +139,15 @@ class Prepare:
         py('ped_collider_templates.py', out, out / 'runtime', RAGE)
 
     def stage_vehicles(self):
-        gta_extract.vehicles(RAGE, self.keys, self.gta, self.work / 'gta-vehyft', self.work / 'gta-vehdata',
-                             progress=self.within('gta-vehicles'))
+        gta_extract.vehicles(binary(RPF), self.keys, self.gta, self.work / 'gta-vehdata', progress=self.within('gta-vehicles'))
         py('build-vehicle-masses.py', self.work / 'gta-vehdata', self.masses)
 
     def stage_world(self):
         self.world.parent.mkdir(parents=True, exist_ok=True)
-        gta_extract.warm(self.work / 'gta-meta', self.work / 'gta-vehyft')
-        cache = binary('skatev-world-cache.exe')
-        subprocess.run([str(cache), '--templates', self.world, self.work / 'gta-meta', self.masses], check=True)
-        # after --templates: it rewrites the template index the vehicles are merged into
-        subprocess.run([str(cache), '--vehicle-bounds', self.world, self.work / 'gta-vehyft', self.masses], check=True)
+        # GTA's archives read in place: only the entries used, no extracted copy
+        exe('skatev-world-cache.exe', '--templates-gta', self.world, self.gta, self.keys, self.masses)
+        # after --templates-gta: it rewrites the template index the vehicles are merged into
+        exe('skatev-world-cache.exe', '--vehicle-bounds-gta', self.world, self.gta, self.keys, self.masses)
         svsd = sorted(SHIPPED_WORLD.glob('*.svsd'))
         if svsd:
             shutil.copyfile(svsd[0], self.world.with_suffix('.svsd'))
@@ -155,20 +155,19 @@ class Prepare:
             shutil.copyfile(SHIPPED_WORLD / 'crackmaps.svgj', self.world.parent / 'crackmaps.svgj')
 
     def stage_peds(self):
-        players, skeletons = gta_extract.ped_models(RAGE, self.keys, self.gta, self.work / 'gta-peds',
-                                                    progress=self.within('peds', 0.8))
+        players = gta_extract.ped_models(binary(RPF), self.keys, self.gta, self.work / 'gta-peds')
         for ped in gta_extract.PLAYERS:
             exe('skatev-ped-export.exe', players, ped, self.peds)
-        exe('skatev-ped-export.exe', '--skeletons', skeletons, self.peds)
+        exe('skatev-ped-export.exe', '--skeletons-gta', self.gta, self.keys, self.peds)
 
     def stage_clip(self):
-        ai = gta_extract.weapon_meta(RAGE, self.keys, self.gta, self.work / 'gta-weapon-meta')
+        ai = gta_extract.weapon_meta(binary(RPF), self.keys, self.gta, self.work / 'gta-weapon-meta')
         py('build-board-weapon.py', ai / 'weapons.meta', ai / 'weaponanimations.meta', self.clip / 'weapon')
         exe('live_clip.exe', self.peds, self.clip, self.clip / 'live_clip_layout.h')
 
     def stage_icon(self):
         hud = self.work / 'hud'
-        gta_extract.extract(RAGE, self.keys, self.gta / 'update/update.rpf', ['*scaleform_generic.rpf/hud.gfx'], hud)
+        gta_extract.extract(binary(RPF), self.keys, self.gta / 'update/update.rpf', ['*scaleform_generic.rpf/hud.gfx'], hud)
         py('build-board-icon.py', '--source', next(hud.rglob('hud.gfx')), '--out', self.clip / 'hud.gfx')
 
     def clip_matches(self):
@@ -220,12 +219,12 @@ class Prepare:
             raise SystemExit(f'--redo: no stage {self.a.redo}')
         chain = lambda c: [s for s in stages if s[1] == c]
         self.left = [s[0] for s in stages] + ['install' if self.a.install else None]
-        self.part = {}
+        self.part, self.running = {}, {}
         self.step(None)
-        slow = gta_extract.throttle(self.gta, self.out)
-        if slow:
-            print(f'hard disk ({", ".join(slow)}): reading GTA archives {gta_extract.JOBS} at a time', flush=True)
-        with ThreadPoolExecutor(2) as pool:
+        slow = gta_extract.throttle(self.gta, self.out, self.a.skate)
+        if slow:  # one reader at a time: the Skate stages, then the GTA ones
+            print(f'hard disk or unclassified drive ({", ".join(slow)}): one step at a time', flush=True)
+        with ThreadPoolExecutor(1 if slow else 2) as pool:
             ran = list(pool.map(self.run_chain, [chain('skate'), chain('gta')]))
         self.run_chain(chain('join'), force=any(ran))
         self.clip_ok = self.clip_matches()
@@ -242,11 +241,17 @@ class Prepare:
                 continue
             if setup_engine.gta_running():  # reads GTA's archives; never compete with the game for them
                 raise SystemExit(f'GTA V started: stopped before {name}; rerun to resume')
-            print(f'== {name}: {STEPS.get(name, (1, name))[1]}', flush=True)
+            label = STEPS.get(name, (1, name))[1]
+            self.running[name] = label
+            print(f'== {name}: {label}', flush=True)
             receipt.unlink(missing_ok=True)
             t = time.time()
             fn()
             receipt.write_text(json.dumps({'key': key, 'seconds': round(time.time() - t, 1)}))
+            print(f'   {name} took {time.time() - t:.0f} s', flush=True)
+            self.running.pop(name, None)
+            for other, text in list(self.running.items()):  # the window shows the last '==' line: name what still runs
+                print(f'== {other}: {text}', flush=True)
             force = ran = True
             self.step(name)
         return ran

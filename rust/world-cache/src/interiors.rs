@@ -28,6 +28,10 @@ pub struct Stats {
 }
 
 fn walk(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
+    if let Some(files) = crate::vfs::files_under(dir, ext) {
+        out.extend(files);
+        return;
+    }
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
@@ -64,8 +68,8 @@ pub fn layered(
         .collect();
     if let Some(dir) = layers_dir {
         // layers.txt sits in the layer directory or (gta-meta) beside it.
-        let order = std::fs::read_to_string(dir.join("layers.txt"))
-            .or_else(|_| std::fs::read_to_string(dir.parent().unwrap_or(dir).join("layers.txt")));
+        let order = crate::vfs::read_to_string(dir.join("layers.txt"))
+            .or_else(|_| crate::vfs::read_to_string(dir.parent().unwrap_or(dir).join("layers.txt")));
         if let Ok(order) = order {
             for layer in order.lines().map(str::trim).filter(|l| !l.is_empty()) {
                 let mut f = Vec::new();
@@ -85,7 +89,7 @@ pub fn layered(
 fn manifests(meta_dir: &Path) -> Vec<rage_formats::Manifest> {
     let mut files = Vec::new();
     walk(&meta_dir.join("base"), "ymf", &mut files);
-    if let Ok(order) = std::fs::read_to_string(meta_dir.join("layers.txt")) {
+    if let Ok(order) = crate::vfs::read_to_string(meta_dir.join("layers.txt")) {
         for layer in order.lines().map(str::trim).filter(|l| !l.is_empty()) {
             let root = meta_dir.join("layers").join(layer);
             let mut f = Vec::new();
@@ -96,7 +100,7 @@ fn manifests(meta_dir: &Path) -> Vec<rage_formats::Manifest> {
     }
     files
         .iter()
-        .filter_map(|p| std::fs::read(p).ok())
+        .filter_map(|p| crate::vfs::read(p).ok())
         .filter_map(|b| parse_ymf(&b).ok().map(|(_, m)| m))
         .collect()
 }
@@ -256,7 +260,7 @@ impl Shells {
             let local = self.local_cache.entry(e.archetype_hash).or_insert_with(|| {
                 paths
                     .iter()
-                    .filter_map(|p| std::fs::read(p).ok())
+                    .filter_map(|p| crate::vfs::read(p).ok())
                     .filter_map(|b| primitives::triangles(&b, options, counts).ok())
                     .flatten()
                     .collect()
@@ -312,7 +316,7 @@ pub fn triangles(
     let mut stats = empty_stats(ymaps.len());
     let mut out = Vec::new();
     for ymap in &ymaps {
-        let Ok(bytes) = std::fs::read(ymap) else {
+        let Ok(bytes) = crate::vfs::read(ymap) else {
             continue;
         };
         shells.place_ymap(&bytes, options, invert, counts, &mut stats, &mut out);
@@ -338,7 +342,7 @@ pub fn near(meta_dir: &Path, x: f32, y: f32, r: f32) {
     walk(&meta_dir.join("base"), "ymap", &mut files);
     walk(&meta_dir.join("layers"), "ymap", &mut files);
     for p in files {
-        let Ok(bytes) = std::fs::read(&p) else { continue };
+        let Ok(bytes) = crate::vfs::read(&p) else { continue };
         let Ok(instances) = parse_ymap_mlo_instances(&bytes) else { continue };
         for inst in instances {
             let e = inst.entity;

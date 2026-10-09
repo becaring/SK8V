@@ -7,3 +7,4 @@ publish = false
 [dependencies]
 rage-formats = { path = "../../upstream/rage-formats", default-features = false }
 svwc = { path = "../svwc" }
+gta-archives = { path = "../gta-archives" }

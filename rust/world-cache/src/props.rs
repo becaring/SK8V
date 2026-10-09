@@ -71,7 +71,7 @@ fn stem_hash(p: &Path) -> u32 {
 }
 
 fn drawable_bound(path: &Path, options: Options, counts: &mut Counts) -> Option<Vec<Triangle>> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = crate::vfs::read(path).ok()?;
     let (system, graphics) = prepare_rsc7(&bytes).ok()?;
     let r = ResReader { system: &system, graphics: &graphics };
     let head = r.resolve(SYSTEM_BASE, 0xD0)?;
@@ -90,7 +90,7 @@ fn drawable_bound(path: &Path, options: Options, counts: &mut Counts) -> Option<
 /// include their model-space placement: adding LOD.PositionOffset again
 /// would double-translate them. Broken-off/articulated parts are not tracked.
 pub fn fragment_bound(path: &Path, options: Options, counts: &mut Counts) -> Option<Vec<Triangle>> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = crate::vfs::read(path).ok()?;
     let (system, graphics) = prepare_rsc7(&bytes).ok()?;
     fragment_bound_reader(&ResReader { system: &system, graphics: &graphics }, options, counts)
 }
@@ -122,7 +122,7 @@ fn fragment_bound_reader(r: &ResReader<'_>, options: Options, counts: &mut Count
 /// DamagedMass in the CodeWalker reference layout, before the group index the
 /// pinned reader uses at +0x10), summed over children.
 pub fn fragment_masses(path: &Path) -> Option<(usize, f32, f32)> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = crate::vfs::read(path).ok()?;
     let (system, graphics) = prepare_rsc7(&bytes).ok()?;
     let r = ResReader { system: &system, graphics: &graphics };
     let root = r.resolve(SYSTEM_BASE, 0xf8)?;
@@ -167,7 +167,7 @@ impl Library {
         let mut door_archetypes = std::collections::HashSet::new();
         let mut mlo_doors = HashMap::new();
         for p in layered(&base, Some(&layers), "ytyp", |_| true) {
-            let Ok(bytes) = std::fs::read(&p) else { continue };
+            let Ok(bytes) = crate::vfs::read(&p) else { continue };
             let Ok(y) = parse_ytyp(&bytes) else { continue };
             let doors = interiors::doors::read(&bytes).unwrap_or_else(|e| panic!("door metadata {}: {e}", p.display()));
             for a in y.archetypes {
@@ -250,7 +250,7 @@ pub fn triangles(meta_dir: &Path, options: Options, counts: &mut Counts) -> (Vec
     let mut out = Vec::new();
     let toggled = interiors::script_toggled_ymaps(meta_dir);
     for p in layered(&base, Some(&layers), "ymap", |p| !toggled.contains(&interiors::stem_hash(p))) {
-        let Ok(bytes) = std::fs::read(&p) else { continue };
+        let Ok(bytes) = crate::vfs::read(&p) else { continue };
         lib.bake_ymap(&bytes, &p, options, counts, &mut out, &mut stats, &mut baked);
     }
     let Library { arch, models, mut bounds, .. } = lib;
@@ -330,7 +330,7 @@ pub fn map_states(
     let mut baked = BTreeSet::new();
     let mut states = Vec::new();
     for ymap in &ymaps {
-        let Ok(bytes) = std::fs::read(ymap) else {
+        let Ok(bytes) = crate::vfs::read(ymap) else {
             continue;
         };
         let mut triangles = Vec::new();
@@ -378,7 +378,7 @@ pub fn audit(meta_dir: &Path, near: Option<([f32; 3], f32)>) {
     let mut door_archetypes = std::collections::HashSet::new();
     let mut mlo_doors = HashMap::new();
     for p in layered(&base, Some(&layers), "ytyp", |_| true) {
-        let Ok(bytes) = std::fs::read(&p) else { continue };
+        let Ok(bytes) = crate::vfs::read(&p) else { continue };
         let Ok(y) = parse_ytyp(&bytes) else { continue };
         let doors = interiors::doors::read(&bytes).unwrap_or_default();
         for a in y.archetypes {
@@ -426,7 +426,7 @@ pub fn audit(meta_dir: &Path, near: Option<([f32; 3], f32)>) {
     };
     let toggled = interiors::script_toggled_ymaps(meta_dir);
     for p in layered(&base, Some(&layers), "ymap", |p| !toggled.contains(&interiors::stem_hash(p))) {
-        let Ok(bytes) = std::fs::read(&p) else { continue };
+        let Ok(bytes) = crate::vfs::read(&p) else { continue };
         let Ok(entities) = parse_ymap_entities(&bytes) else { continue };
         let doors = interiors::doors::read(&bytes).unwrap_or_default();
         for e in entities.iter().filter(|e| !e.is_mlo_instance) {

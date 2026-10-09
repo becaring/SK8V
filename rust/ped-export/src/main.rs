@@ -44,8 +44,11 @@ use std::path::{Path, PathBuf};
 type R<T> = Result<T, Box<dyn Error>>;
 
 fn skeleton(yft: &Path) -> R<serde_json::Value> {
-    let bytes = fs::read(yft)?;
-    let mut reader = Reader::open(&bytes)?;
+    skeleton_of(yft, &fs::read(yft)?)
+}
+
+fn skeleton_of(yft: &Path, bytes: &[u8]) -> R<serde_json::Value> {
+    let mut reader = Reader::open(bytes)?;
     // FragType +0x30 -> FragDrawable; its DrawableBase header holds the
     // skeleton pointer at +0x18 (after vft, pages, shader group). The rest of
     // a FragDrawable differs from a plain Drawable, so only the skeleton is read.
@@ -484,8 +487,42 @@ fn export_skeletons(dir: &Path, out: &Path) -> R<()> {
     let mut files = Vec::new();
     yfts(dir, &mut files)?;
     files.sort_by_key(|p| (p.strip_prefix(dir).is_ok_and(|r| r.starts_with("x64")), p.clone()));
+    write_skeletons(files.into_iter().map(|p| (p.clone(), move || skeleton(&p))), out)
+}
+
+/// `--skeletons-gta <GTA> <keys> <out>`: as `--skeletons` over every
+/// `*peds*.rpf/*.yft` in the install's archives, read in place (a hard disk
+/// reads the skeletons, not a 0.8 GB copy of every ped). Archives in path
+/// order; a later one's copy of the same path wins, as the extraction did.
+fn export_skeletons_gta(gta: &Path, keys: &Path, out: &Path) -> R<()> {
+    use gta_archives::{Archive, matches_pattern, walk};
+    let keys = gta_archives::keys(keys)?;
+    let mut archives = gta_archives::archives_under(gta);
+    archives.sort_by_key(|a| a.to_string_lossy().into_owned());
+    let mut found = BTreeMap::new();
+    for a in archives {
+        let archive = match Archive::open(&a, &keys) {
+            Ok(archive) => std::sync::Arc::new(archive),
+            Err(e) => {
+                eprintln!("ped skeletons: skipped {}: {e}", a.display());
+                continue;
+            }
+        };
+        let mut failed = Vec::new();
+        for e in walk(archive, &keys, &|p| matches_pattern(p, "*peds*.rpf/*.yft"), &mut failed) {
+            found.insert(e.path.clone(), e);
+        }
+    }
+    let mut files: Vec<_> = found.into_values().collect();
+    gta_archives::prefetch(&files);
+    files.sort_by_cached_key(|e| (e.path.starts_with("x64/"), PathBuf::from(&e.path)));
+    let keys = &keys;
+    write_skeletons(files.into_iter().map(|e| (PathBuf::from(&e.path), move || skeleton_of(Path::new(&e.path), &e.read(keys)?))), out)
+}
+
+fn write_skeletons<F: FnOnce() -> R<serde_json::Value>>(files: impl Iterator<Item = (PathBuf, F)>, out: &Path) -> R<()> {
     let (mut written, mut kept, mut failed) = (0, 0, 0);
-    for yft in files {
+    for (yft, read) in files {
         let ped = yft.file_stem().unwrap().to_string_lossy().to_ascii_lowercase();
         let dest = out.join(&ped);
         let full = fs::read_dir(&dest).is_ok_and(|mut d| {
@@ -495,7 +532,7 @@ fn export_skeletons(dir: &Path, out: &Path) -> R<()> {
             kept += 1;
             continue;
         }
-        match skeleton(&yft) {
+        match read() {
             Ok(sk) => {
                 fs::create_dir_all(&dest)?;
                 fs::write(dest.join("skeleton.json"), serde_json::to_string_pretty(&sk)?)?;
@@ -515,6 +552,9 @@ fn main() -> R<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 4 && args[1] == "--skeletons" {
         return export_skeletons(Path::new(&args[2]), Path::new(&args[3]));
+    }
+    if args.len() == 5 && args[1] == "--skeletons-gta" {
+        return export_skeletons_gta(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]));
     }
     if args.len() < 4 {
         return Err("usage: skatev-ped-export <streamedpeds dir> <ped name> <out dir>".into());
