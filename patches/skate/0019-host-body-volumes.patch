@@ -1,0 +1,80 @@
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -5,7 +5,7 @@ use bevy::prelude::*;
+ use skate_data::skate_map::{Collision, Geometry, Rail, SkateMap};
+ use std::path::Path;
+ pub mod hud;
+-pub use super::host_bodies::{HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
++pub use super::host_bodies::{CHARACTER_GROUP, HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+ 
+ /// Synthetic HOST regression for the shared moving-entity query boundary.
+ /// Does not load retail assets or alter a live session.
+--- a/crates/skate-host/src/physics/host_bodies.rs
++++ b/crates/skate-host/src/physics/host_bodies.rs
+@@ -13,11 +13,12 @@ use skate_core::{
+         board_step::{ATTACHED_REACTION_BASE, CollisionBody},
+         contact_solver::RetailContactJacobian,
+         rigid_body::{RetailQuaternion, world_inverse_inertia},
++        world_contact::ContactPrimitive,
+     },
+ };
+ 
+ /// One host entity as sampled by the host (Skate space, metres, seconds).
+-#[derive(Clone, Copy, Debug)]
++#[derive(Clone, Debug)]
+ pub struct HostBody {
+     /// Host entity tag (the same tag its dynamic triangles carry).
+     pub tag: u32,
+@@ -36,8 +37,18 @@ pub struct HostBody {
+     /// this entity: VEHICLE_GROUP for a host vehicle (retail vehicle wipeout
+     /// path: Wipeout_GroundVehicleContact/Scalar), 0 (world) otherwise.
+     pub collision_group: u32,
++    /// The entity's own collision primitives in world space (a GTA ped: its
++    /// posed ragdoll capsules and boxes). They meet the board and skeleton
++    /// volumes as a remote actor's do; empty for an entity that collides
++    /// through its triangles (vehicles, props).
++    pub volumes: Vec<ContactPrimitive>,
+ }
+ 
++/// Retail collision group of characters (other skaters): SkeletonCollision
++/// scales their contact force by SkaterSkeletonScalar and the wipeout's
++/// limits by SkaterSkaterThresholdScalar.
++pub const CHARACTER_GROUP: u32 = 5;
++
+ /// Retail collision group of vehicles: SkeletonCollision records its contact
+ /// force as the wipeout's vehicle force (maximum_group_8_force).
+ pub const VEHICLE_GROUP: u32 = 8;
+--- a/crates/skate-host/src/physics/solve.rs
++++ b/crates/skate-host/src/physics/solve.rs
+@@ -76,6 +76,31 @@ pub(super) fn advance(
+         }
+     }
+     physics.network_contacts = contacts.len() - before_remote;
++    // SkateV: host bodies with their own primitives (GTA peds: posed ragdoll
++    // parts) meet the local volumes as remote actors do, as body B, with the
++    // skater's own material (a person meeting a person).
++    if let Some(material) = skeleton_volumes.first().map(|v| v.material) {
++        for (i, h) in physics.host_bodies.inputs.iter().enumerate() {
++            let (v, w, x) = (h.linear_velocity, h.angular_velocity, h.position);
++            for &primitive in &h.volumes {
++                let (bc, br) = super::network::bounds(primitive);
++                let r = bc - bevy::math::Vec3::from_array(x);
++                let point = bevy::math::Vec3::from_array(v) + bevy::math::Vec3::from_array(w).cross(r);
++                let b = skate_core::physics::board_world::BoardWorldVolume {
++                    body: skate_core::physics::board_step::CollisionBody::Attached(host_base + i),
++                    primitive,
++                    linear_velocity: skate_core::math::Vector3::new(point.x, point.y, point.z),
++                    material,
++                };
++                for a in board_volumes.iter().chain(&skeleton_volumes) {
++                    let (ac, ar) = super::network::bounds(a.primitive);
++                    if ac.distance_squared(bc) <= (ar + br + 0.05).powi(2) {
++                        assembly_contacts::append_pair(&mut contacts, a, &b);
++                    }
++                }
++            }
++        }
++    }
+     physics.contact_count = contacts.len();
+     let dt = physics.settings.step.simulation.time_step;
+     // SkateV: host-driven impacts take the whole assembly first (see

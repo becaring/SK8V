@@ -1,0 +1,49 @@
+--- a/crates/skate-host/src/physics/host_bodies.rs
++++ b/crates/skate-host/src/physics/host_bodies.rs
+@@ -99,8 +99,18 @@
+     /// launches them instead. Tags launched and still within reach of the
+     /// rider (no second launch until they are apart).
+     pub launched: std::collections::HashSet<u32>,
++    /// SkateV skitching: the towing vehicle (tag) and the solve ticks since
++    /// it was let go (0 while held). It is GTA's to drive and the tow holds
++    /// the rider to it, so it neither strikes nor props the rider; after the
++    /// release it stays out of the solve until it is clear of the rider, at
++    /// most `TOW_CLEAR_TICKS` (owner runs 2026-10-04: a car pulling away hit
++    /// its own skitcher at 16.9 m/s; releases bailed on the car just let go).
++    pub tow: Option<(u32, u32)>,
+ }
+ 
++/// Upper bound on the post-release exemption (solve ticks, 2 s).
++pub const TOW_CLEAR_TICKS: u32 = 120;
++
+ /// Launch mode for host characters (see `Proxies::launched`).
+ pub fn launch_mode() -> bool {
+     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+--- a/crates/skate-host/src/physics/solve.rs
++++ b/crates/skate-host/src/physics/solve.rs
+@@ -56,6 +56,25 @@
+         skeleton_query,
+         physics.retention,
+     ));
++    // Skitching: the towing vehicle's contacts are left out (see
++    // `Proxies::tow`); a let-go tow rejoins once clear of the rider.
++    let towing = (skater.player_state.current() == skate_core::player::state::PhysicalStateId::Skitching)
++        .then_some(skater.skitch.skitch.id_1316)
++        .filter(|tag| *tag != 0);
++    physics.host_bodies.tow = match (towing, physics.host_bodies.tow) {
++        (Some(tag), _) => Some((tag, 0)),
++        (None, Some((tag, ticks))) if ticks < super::host_bodies::TOW_CLEAR_TICKS => Some((tag, ticks + 1)),
++        _ => None,
++    };
++    if let Some((tag, ticks)) = physics.host_bodies.tow {
++        let tow = physics.host_bodies.inputs.iter().position(|h| h.tag == tag)
++            .map(|i| skate_core::physics::board_step::CollisionBody::Attached(host_base + i));
++        let before = contacts.len();
++        contacts.retain(|c| Some(c.body_b) != tow);
++        if ticks > 0 && contacts.len() == before {
++            physics.host_bodies.tow = None;
++        }
++    }
+     assembly_contacts::append(
+         &mut contacts,
+         &board_volumes,

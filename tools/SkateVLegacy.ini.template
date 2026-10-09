@@ -1,0 +1,107 @@
+[SkateV]
+DataRoot={DataRoot}
+WorldCache={WorldCache}
+; Presentation tuning.
+PedZOffset=1.0
+CameraFovScale=1.0
+DrawBoard=1
+; Native Skate board: owned skeletal drawable, original texture/normal/specular inputs, GTA lighting and shadows.
+BoardNative=1
+; Native pose-following NPC contact: requires exact live collision-asset match; mismatch disables this path and logs why.
+PedPoseCollision={PedPoseCollision}
+; Stance: the Skate profile stance. Regular = left foot forward, A pushes normally (X mongo); Goofy = right foot forward.
+Stance={Stance}
+; HUD: Skate 3's original trickdisplay (needs the hud export of tools/convert-skate-data.py). Hud=0 disables.
+; HudMaxAspect: widest HUD region (0 = default 2.4, covers every 21:9 panel; -1 = full width on 32:9). HudSafeZone: -1 = GTA's Safezone setting, 0.5..1.0 overrides.
+Hud=1
+HudMaxAspect=0
+HudSafeZone=-1
+; HudComposite: -1 auto; 1 / 2 force the frame-copy / gamma composite (troubleshooting only).
+HudComposite=-1
+; HallOfMeat: Skate 3's bail scoring (bone damage, bonuses), broken-bone slow-mo and its HUD (needs tools/prepare-hom-hud.py for the HUD). 0 disables.
+; Toggle it in the in-game menu (/); the choice is saved here.
+; HallOfMeatMetrics: 1 = show every metric panel during a bail, not only those past their points threshold.
+HallOfMeat=1
+HallOfMeatMetrics=0
+; HallOfMeatXray: Skate 3's broken-bone x-ray during a bail (needs tools/prepare-hom-xray.py). 0 disables.
+HallOfMeatXray=1
+; BailTimeLimit: seconds a still-moving bail may run before the automatic respawn. 0 = no limit (a bail ends once you
+;   come to rest, or press A/X to get up); -1 = Skate 3's own limit. Kept across reinstalls.
+BailTimeLimit=0
+; AirTimeLimit: seconds you may stay airborne before Skate returns you to your last spot (it guards against falling
+;   through the world). Default 30 covers GTA's tallest drops; 0 = no limit; -1 = Skate 3's own. Kept across reinstalls.
+AirTimeLimit=30
+; LipRule: 1 = a rolling board stalls on a ramp lip or coping only when riding up into it slowly; dropping in and
+;   carrying speed over a lip never catch the trucks (ollie onto it to grind). 0 = Skate 3's own. Kept across reinstalls.
+LipRule=1
+; Records (top ten Hall of Meat bails and lines): menu > Hall of Meat and records. They live in %LOCALAPPDATA%\SkateV\records.json.
+; Line: showcase line files separated by ; (start pose plus authored input; read on every play). While skating, the Dev menu
+;   teleports to the current line's start and plays it (any input takes over) or moves to the next line in the list.
+Line={Line}
+; ShowDebug: 1 = old debug text HUD (dev only).
+ShowDebug=0
+; VerboseLog: dev; 1 = also log perf, hitches, collision streaming, the skater trace and the editor/clip probes (0: startup, state changes and problems only).
+VerboseLog=0
+; 0 = load only the ASI (with VerboseLog=1 it logs frame timing for A/B hitch testing).
+Runtime=1
+; StallSampler: dev; 1 = sample the script thread's stack when a frame stalls (logged with the hitch).
+StallSampler=0
+; Skate presentation: your GTA character wears Skate's animation (else Skate's own skater).
+; DrawSkater: flat board triangles while the native board (BoardNative) is unavailable.
+DrawSkater=1
+GtaCharacter=1
+PedCache={PedCache}
+CharacterTriangles=8000
+SkaterTriangles=3000
+; PosePed: Skate's pose drives your character (wraps its animation pass via a private vtable copy; restored on exit).
+PosePed=1
+; LiveClip: 1 = Skate's pose also drives GTA's own animation (the skatev dlc pack), so the Rockstar Editor and GTA see it.
+LiveClip={LiveClip}
+; Real Skate dry gameplay voices through GTA positional audio. Cache comes from your own Skate files.
+Audio=1
+AudioCache={AudioCache}
+AudioOutput=Gta
+AudioMasterGain=1.0
+; Position follows each emitter; Tracker is the existing ped-placement fallback.
+AudioGtaPlacement=Position
+; Empty = 0xD4AE89CA (the loudest plain GTA category, chain -2 dB); a name or 0x hash forces one; SOUND = BINK_MONO_SOUND's own TV category.
+AudioGtaCategory=
+AudioGtaBufferMs=50
+; GTA delegation: GTA swims once the skater's chest is SwimDepth m under water, and climbs a barrier on X, X off the board; Skate resumes on foot when GTA is done.
+GtaDelegation=1
+SwimDepth=1.0
+; RetailQuirk::BackwardsMan: Skate 3 backwards-man / speed glitch assist.
+; Chord = XInput mask (0x00C0 = L3+R3); set it in the menu (Controller and HUD).
+; Retail replays the recorded marker/respawn/recall inputs, with no launch velocity override.
+BackwardsMan=1
+BackwardsManChord=0x00C0
+BackwardsManDirection=Backward
+BackwardsManRemountDelay=6
+; Lifecycle: the board comes out from the weapon wheel or the menu (Skate on / off); SkateV stays loaded in the background.
+; Y mounts/dismounts while Skate is active; holding Y puts the board away. MenuButton = combined XInput mask that opens the menu (0x0120 = Back + LB, 0 = off; / always works).
+; BoardActionInMissions=1 allows it during story missions. BackgroundPrepare=0 builds Skate at the first press instead of at load.
+MenuButton=0x0120
+BoardActionInMissions=0
+; PutAwayHoldMs: holding Y this long while skating steps off and puts the board away (0 = off).
+PutAwayHoldMs=600
+BackgroundPrepare=1
+; Moving GTA vehicles/peds/props collide through Skate.
+DynamicWorld=1
+DynamicRadius=35
+; PedHitboxes: peds collide as their own posed ragdoll parts and take Skate's momentum (0: the old box).
+PedHitboxes=1
+; PedLaunch: peds never slow you; the first touch launches them at twice your closing speed x PedLaunchScale, with PedLaunchLift m/s up per m/s along the ground (0: physical momentum exchange).
+PedLaunch=1
+PedLaunchScale=1.0
+PedLaunchLift=0.3
+; VehicleDamage: Skate impacts dent GTA vehicles: a frame's impulse on a car of at least VehicleDamageMin N s deals impulse x VehicleDamageScale damage at the contact, dent radius VehicleDamageRadius (logged as "vehicle damage").
+VehicleDamage=1
+VehicleDamageScale=0.5
+VehicleDamageMin=200
+VehicleDamageRadius=150
+; SkitchStandoff: metres behind a car's rearmost bound that the skitch grab line (an invisible wall) sits, so the rider's hands stay clear of the bodywork and GTA's physics on the car (0: on the bodywork).
+SkitchStandoff=0.3
+; AudioGtaGainDb: Skate's level in GTA (dB); the in-game menu (/) changes it and saves it here (kept by reinstalls).
+AudioGtaGainDb=1.4
+; Logs: %LOCALAPPDATA%\SkateV\SkateVLegacy.log and SkateVRuntime.log
+; Most settings here are also edited in game: press / for the SkateV menu (changes save here).

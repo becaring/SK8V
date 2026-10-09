@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "targets": {
+    "gtav_legacy": {
+      "patch": "1.0.3889.0",
+      "edition": "Legacy PC",
+      "mode": "Story Mode only"
+    },
+    "scripthookv": {
+      "version": "v3889.0 / 1158.13",
+      "released": "2026-07-15",
+      "supported_patches": [
+        "1.0.3889.0",
+        "1.0.1158.13"
+      ],
+      "page": "https://www.dev-c.com/gtav/scripthookv/",
+      "runtime_archive": "https://www.dev-c.com/files/ScriptHookV_3889.0_1158.13.zip",
+      "sdk_archive": "https://www.dev-c.com/files/ScriptHookV_SDK_1.0.617.1a.zip",
+      "redistribution": "do not commit; fetch from publisher"
+    },
+    "rust": {
+      "version": "1.98.1"
+    },
+    "msvc": {
+      "family": "Visual Studio 2022 x64 tools"
+    }
+  },
+  "generated_date": "2026-10-01"
+}

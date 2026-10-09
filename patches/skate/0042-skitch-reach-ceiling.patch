@@ -1,0 +1,37 @@
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index c11005c..8b61ba3 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -255,7 +255,8 @@ impl Session {
+     /// offset minus Hash_978B extent along the skater's up, from the skater's
+     /// animation frame) could never be detected: it is raised to that floor
+     /// plus 1 cm (a numeric guard so the endpoints are strictly inside), in
+-    /// the car's model z. While a line is held its height is kept.
++    /// the car's model z; a line above its top (a bus or truck bumper) is
++    /// lowered to that top minus 1 cm. While a line is held its height is kept.
+     pub fn set_grab_lines(&mut self, lines: &[GrabLine]) -> Result<(), String> {
+         use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry};
+         use skate_core::player::offboard::grab_scene::registry::{Object, Provider, Spline};
+@@ -266,6 +267,7 @@ impl Session {
+         let frame = self.skater.player_input.processed.effective_anim_transform_192
+             .map(|v| v.map(f32::from_bits));
+         let floor = frame[3][1] + (s.detect_offset_8e3c[1] - s.detect_extents_978b[1]) + 0.01;
++        let ceiling = frame[3][1] + (s.detect_offset_8e3c[1] + s.detect_extents_978b[1]) - 0.01;
+         let mut heights = std::collections::HashMap::new();
+         let lines: Vec<GrabLine> = lines.iter().map(|l| {
+             let mut l = *l;
+@@ -275,7 +277,13 @@ impl Session {
+                 _ => {
+                     let world = l.frame[3][1] + l.frame[0][1] * l.points[0][0]
+                         + l.frame[1][1] * l.points[0][1] + up * l.points[0][2];
+-                    if up > 0.5 && world < floor { l.points[0][2] + (floor - world) / up } else { l.points[0][2] }
++                    if up > 0.5 && world < floor {
++                        l.points[0][2] + (floor - world) / up
++                    } else if up > 0.5 && world > ceiling {
++                        l.points[0][2] - (world - ceiling) / up
++                    } else {
++                        l.points[0][2]
++                    }
+                 }
+             };
+             l.points[0][2] = z;

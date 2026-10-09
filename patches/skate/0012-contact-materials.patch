@@ -1,0 +1,95 @@
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -199,15 +199,21 @@
+     /// surface as the static collision map (0). `tag` identifies the host
+     /// entity in `dynamic_hits` only. Returns the triangles accepted.
+     pub fn set_dynamic_triangles(&mut self, triangles: &[([[f32; 3]; 3], u32)]) -> usize {
++        let surfaces: Vec<_> = triangles.iter().map(|(p, id)| (*p, *id, 0)).collect();
++        self.set_dynamic_surfaces(&surfaces)
++    }
++
++    /// Entity identity and packed collision surface are independent.
++    pub fn set_dynamic_surfaces(&mut self, triangles: &[([[f32; 3]; 3], u32, u32)]) -> usize {
+         use skate_core::{math::Vector3, physics::board_world::WorldTriangle};
+         let material = self.physics.floor_material();
+         let (built, entities): (Vec<_>, Vec<_>) = triangles
+             .iter()
+-            .filter_map(|(points, tag)| {
++            .filter_map(|(points, tag, surface)| {
+                 WorldTriangle::from_vertices(
+                     points.map(|p| Vector3::new(p[0], p[1], p[2])),
+                     material,
+-                    0,
++                    *surface & 0xf7ff,
+                     0x1e1,
+                     [-1.; 3],
+                     0.,
+@@ -343,14 +349,13 @@
+     spawn: [f32; 3],
+     heading: f32,
+ ) -> SkateMap {
+-    SkateMap {
+-            version: 14,
+-            name: "IW4L collision".into(),
+-            spawn,
+-            heading,
+-            environment: vec![],
+-            materials: vec![skate_data::skate_map::Material {
+-                name: "MW2".into(),
++    let mut surface_ids = std::collections::BTreeMap::new();
++    let mut materials = Vec::new();
++    let material_ids: Vec<_> = (0..triangles.len()).map(|i| {
++        let packed = tags.get(i).copied().unwrap_or(0) & 0xf7ff;
++        *surface_ids.entry(packed).or_insert_with(|| {
++            materials.push(skate_data::skate_map::Material {
++                name: format!("surface_{packed:04x}"),
+                 flags: 0,
+                 friction: 0.8,
+                 restitution: 0.,
+@@ -361,12 +366,22 @@
+                 indirect_strength: 1.,
+                 alpha_mode: 0,
+                 alpha_cutoff: 0.5,
+-                audio: 0,
+-                physics: 0,
+-                pattern: 0,
++                audio: (packed & 127) as _,
++                physics: ((packed >> 7) & 15) as _,
++                pattern: ((packed >> 12) & 15) as _,
+                 depth_layer: None,
+                 retail_definition: None,
+-            }],
++            });
++            materials.len() as u32
++        })
++    }).collect();
++    SkateMap {
++            version: 14,
++            name: "IW4L collision".into(),
++            spawn,
++            heading,
++            environment: vec![],
++            materials,
+             textures: vec![],
+             geometry: Geometry {
+                 vertices: vec![],
+@@ -377,7 +392,7 @@
+                     .map(|(i, points)| Collision {
+                         points,
+                         surface: tags.get(i).copied().unwrap_or(0),
+-                        material: 1,
++                        material: material_ids[i],
+                         native_edges: None,
+                     })
+                     .collect(),
+--- a/crates/skate-core/src/physics/board_world/dynamic_queries.rs
++++ b/crates/skate-core/src/physics/board_world/dynamic_queries.rs
+@@ -10,7 +10,7 @@
+ impl BoardWorld {
+     pub(super) fn refresh_dynamic_query_metadata(&mut self) {
+         self.dynamic_surfaces.clear();
+-        self.dynamic_surfaces.resize(self.dynamic.len(), 0);
++        self.dynamic_surfaces.extend(self.dynamic.iter().map(|t| (t.tag & 0xf7ff) as u16));
+         self.dynamic_mesh = Bounds::from_points(self.dynamic_bounds.iter().flat_map(|b| [b.min, b.max]))
+             .map(|bounds| QueryMesh {
+                 triangle_range: self.triangles.len()..self.triangles.len() + self.dynamic.len(),

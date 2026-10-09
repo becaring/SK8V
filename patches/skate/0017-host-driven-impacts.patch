@@ -1,0 +1,641 @@
+--- /dev/null
++++ b/crates/skate-core/src/physics/host_impact.rs
+@@ -0,0 +1,286 @@
++//! SkateV: impacts driven by a foreign host's moving bodies (GTA vehicles and
++//! props joining the board/skater solve as attached proxies, skate-host
++//! `host_bodies`), resolved before the shared solve as a two-body rigid
++//! collision between the proxy and the whole board + rider assembly.
++//!
++//! The shared solve meets a fast host body through whichever limb it touches;
++//! its iterations carry only part of that impulse through the skeleton joints
++//! while the host body keeps advancing, so a car drove into and through the
++//! rider. Here the assembly's mass, centre of mass and composite inertia take
++//! the impact at the contact point:
++//!
++//! j = (1 + e) v_closing / (1/M + n.(I^-1 (r x n)) x r + 1/m + n.(I_h^-1 (r_h x n)) x r_h)
++//!
++//! with the contacts' own combined restitution `e`. Each body then gains the
++//! rigid velocity change of the assembly (internal motion is kept), the proxy
++//! loses the opposite impulse for this solve, and the caller returns that
++//! impulse to the host like any solved row.
++//!
++//! Applied only where the host body itself moves into the contact (proxy
++//! surface velocity along the normal > 0) and the assembly closes on it within
++//! this step (separation <= closing * dt): a rider skating into a parked car,
++//! a platform carrying the board and resting contacts stay entirely with the
++//! retail solve. The touching points act through their closing-weighted
++//! middle (a flat face meeting several points pushes through their middle).
++//!
++//! The solve no longer sees these contacts closing, so its rows carry no
++//! impact and the skeleton's collision feedback (bails) would never hear of
++//! it. Each struck skeleton part is therefore reported as the solve would have
++//! at first touch, with the host body's velocity expressed in the rider's
++//! frame before the impact (the feedback measures against post-solve rider
++//! velocity): relative velocity = host - rider before.
++use super::{
++    assembly::BodySnapshot,
++    board_step::{BoardCollision, CollisionBody},
++    skeleton_body::{SkeletonContactBody, SkeletonContactReport},
++};
++use crate::math::{Basis3, Vector3};
++
++type V = [f64; 3];
++type M = [[f64; 3]; 3]; // rows
++
++fn v(a: Vector3) -> V {
++    [a.x as f64, a.y as f64, a.z as f64]
++}
++fn out(a: V) -> Vector3 {
++    Vector3::new(a[0] as f32, a[1] as f32, a[2] as f32)
++}
++fn add(a: V, b: V) -> V {
++    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
++}
++fn sub(a: V, b: V) -> V {
++    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
++}
++fn scale(a: V, s: f64) -> V {
++    [a[0] * s, a[1] * s, a[2] * s]
++}
++fn dot(a: V, b: V) -> f64 {
++    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
++}
++fn cross(a: V, b: V) -> V {
++    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
++}
++fn mul(m: &M, a: V) -> V {
++    [dot(m[0], a), dot(m[1], a), dot(m[2], a)]
++}
++/// Rows of a basis whose columns are the body axes.
++fn rows(b: Basis3) -> M {
++    let c = b.columns.map(|c| c.map(|x| x as f64));
++    [[c[0][0], c[1][0], c[2][0]], [c[0][1], c[1][1], c[2][1]], [c[0][2], c[1][2], c[2][2]]]
++}
++fn inverse(m: &M) -> Option<M> {
++    let c = [cross(m[1], m[2]), cross(m[2], m[0]), cross(m[0], m[1])];
++    let det = dot(m[0], c[0]);
++    if !(det.abs() > 1e-12) || !det.is_finite() {
++        return None;
++    }
++    // inverse = adjugate / det; adjugate columns are the row cross products.
++    Some([
++        [c[0][0] / det, c[1][0] / det, c[2][0] / det],
++        [c[0][1] / det, c[1][1] / det, c[2][1] / det],
++        [c[0][2] / det, c[1][2] / det, c[2][2] / det],
++    ])
++}
++
++/// One host-driven impact: the impulse the host body receives (Skate space,
++/// N s) at `point`, and the skeleton reports for the struck parts.
++#[derive(Clone, Debug)]
++pub struct HostImpact {
++    pub proxy: usize,
++    pub point: [f32; 3],
++    pub impulse_on_host: [f32; 3],
++    pub closing: f32,
++    pub restitution: f32,
++    pub assembly_mass: f32,
++    pub reports: Vec<SkeletonContactReport>,
++}
++
++/// `proxies`: the host bodies of this solve, Attached(`proxy_base` + i) in
++/// the contacts. `rider`: every physical board part followed by the
++/// `skeleton_parts` skeleton bodies (Attached(part) in the contacts).
++/// `carried`: the skeleton's animation drive targets, moved with the rider.
++pub fn resolve(
++    proxies: &mut [BodySnapshot],
++    proxy_base: usize,
++    contacts: &[BoardCollision],
++    rider: &mut [&mut BodySnapshot],
++    carried: &mut [BodySnapshot],
++    skeleton_parts: usize,
++    dt: f32,
++) -> Vec<HostImpact> {
++    let mut impacts = Vec::new();
++    if proxies.is_empty() || rider.is_empty() || skeleton_parts > rider.len() {
++        return impacts;
++    }
++    let physical = |b: &BodySnapshot| b.inertia.inverse_mass > 0.0 && b.inertia.inverse_mass.is_finite();
++    // Composite rigid body of the assembly.
++    let (mut mass, mut com, mut momentum) = (0.0f64, [0.0; 3], [0.0; 3]);
++    for b in rider.iter().filter(|b| physical(b)) {
++        let m = 1.0 / b.inertia.inverse_mass as f64;
++        mass += m;
++        com = add(com, scale(v(b.rates.position), m));
++        momentum = add(momentum, scale(v(b.rates.linear_velocity), m));
++    }
++    if !(mass > 0.0) {
++        return impacts;
++    }
++    com = scale(com, 1.0 / mass);
++    let (mut inertia, mut angular) = ([[0.0f64; 3]; 3], [0.0; 3]);
++    for b in rider.iter().filter(|b| physical(b)) {
++        let m = 1.0 / b.inertia.inverse_mass as f64;
++        let r = sub(v(b.rates.position), com);
++        // Own principal inertia in world axes (an unbounded axis adds none).
++        let t = v(b.inertia.inverse_tensor).map(|i| if i > 0.0 && i.is_finite() { 1.0 / i } else { 0.0 });
++        let axes = rows(b.rates.basis);
++        let mut own = [[0.0f64; 3]; 3];
++        for (i, row) in own.iter_mut().enumerate() {
++            for (j, cell) in row.iter_mut().enumerate() {
++                *cell = (0..3).map(|k| axes[i][k] * t[k] * axes[j][k]).sum::<f64>();
++                // Parallel axis.
++                *cell += m * (if i == j { dot(r, r) } else { 0.0 } - r[i] * r[j]);
++            }
++        }
++        for i in 0..3 {
++            for j in 0..3 {
++                inertia[i][j] += own[i][j];
++            }
++        }
++        // Spin about own centre uses the own (not parallel) part only.
++        let mut spin_part = [0.0; 3];
++        let w = v(b.rates.angular_velocity);
++        for (i, s) in spin_part.iter_mut().enumerate() {
++            *s = (0..3).map(|j| (0..3).map(|k| axes[i][k] * t[k] * axes[j][k]).sum::<f64>() * w[j]).sum();
++        }
++        angular = add(angular, add(spin_part, scale(cross(r, v(b.rates.linear_velocity)), m)));
++    }
++    let Some(inverse_inertia) = inverse(&inertia) else {
++        return impacts;
++    };
++    let mut velocity = scale(momentum, 1.0 / mass);
++    let mut spin = mul(&inverse_inertia, angular);
++    let board_parts = rider.len() - skeleton_parts;
++    for proxy in 0..proxies.len() {
++        let body = proxies[proxy];
++        let x = v(body.rates.position);
++        let host_inverse_mass = body.inertia.inverse_mass as f64;
++        let host_inverse_inertia = rows(body.rates.world_inverse_inertia);
++        let (mut weight, mut sum_n, mut sum_a, mut sum_b, mut sum_e) = (0.0f64, [0.0; 3], [0.0; 3], [0.0; 3], 0.0f64);
++        let mut struck = Vec::new();
++        for c in contacts {
++            if c.body_b != CollisionBody::Attached(proxy_base + proxy) {
++                continue;
++            }
++            let part = match c.body_a {
++                CollisionBody::Board(_) => None,
++                CollisionBody::Attached(part) if part < skeleton_parts => Some(part),
++                _ => continue,
++            };
++            let n = v(c.contact.normal);
++            if !(dot(n, n) > 0.5) {
++                continue;
++            }
++            let (pa, pb) = (v(c.contact.position_on_a), v(c.contact.position_on_b));
++            let host = add(v(body.rates.linear_velocity), cross(v(body.rates.angular_velocity), sub(pb, x)));
++            let own = add(velocity, cross(spin, sub(pa, com)));
++            let closing = dot(sub(host, own), n);
++            let separation = dot(sub(pa, pb), n);
++            if !(dot(host, n) > 0.0 && closing > 0.0 && separation <= closing * dt as f64) {
++                continue;
++            }
++            weight += closing;
++            sum_n = add(sum_n, scale(n, closing));
++            sum_a = add(sum_a, scale(pa, closing));
++            sum_b = add(sum_b, scale(pb, closing));
++            sum_e += c.contact.restitution.clamp(0.0, 1.0) as f64 * closing;
++            if let Some(part) = part {
++                let own_body = &rider[board_parts + part];
++                let lv = |a: Vector3| [a.x, a.y, a.z, 0.0];
++                struck.push((
++                    v(own_body.rates.position),
++                    SkeletonContactReport {
++                        part,
++                        normal: [n[0] as f32, n[1] as f32, n[2] as f32, 0.0],
++                        point: [((pa[0] + pb[0]) * 0.5) as f32, ((pa[1] + pb[1]) * 0.5) as f32, ((pa[2] + pb[2]) * 0.5) as f32, 0.0],
++                        tag: c.contact.tag & 0xffff,
++                        other_group: 0,
++                        other_entity: None,
++                        body_a: SkeletonContactBody {
++                            state_flags: own_body.state_flags,
++                            inverse_mass: own_body.inertia.inverse_mass,
++                            linear_velocity: lv(own_body.rates.linear_velocity),
++                        },
++                        body_b: SkeletonContactBody {
++                            state_flags: body.state_flags,
++                            inverse_mass: body.inertia.inverse_mass,
++                            linear_velocity: lv(body.rates.linear_velocity),
++                        },
++                        side_a: true,
++                        solved_vector: [0.0; 4],
++                    },
++                ));
++            }
++        }
++        let length = dot(sum_n, sum_n).sqrt();
++        if !(weight > 0.0) || !(length > 0.0) {
++            continue;
++        }
++        let (n, pa, pb, e) = (scale(sum_n, 1.0 / length), scale(sum_a, 1.0 / weight), scale(sum_b, 1.0 / weight), sum_e / weight);
++        let host = add(v(body.rates.linear_velocity), cross(v(body.rates.angular_velocity), sub(pb, x)));
++        let closing = dot(sub(host, add(velocity, cross(spin, sub(pa, com)))), n);
++        if !(closing > 0.0) {
++            continue;
++        }
++        let (r, rh) = (sub(pa, com), sub(pb, x));
++        let denominator = 1.0 / mass
++            + dot(n, cross(mul(&inverse_inertia, cross(r, n)), r))
++            + host_inverse_mass
++            + dot(n, cross(mul(&host_inverse_inertia, cross(rh, n)), rh));
++        if !(denominator > 0.0 && denominator.is_finite()) {
++            continue;
++        }
++        let j = scale(n, (1.0 + e) * closing / denominator);
++        let (dv, dw) = (scale(j, 1.0 / mass), mul(&inverse_inertia, cross(r, j)));
++        let kick = |b: &mut BodySnapshot| {
++            let lever = sub(v(b.rates.position), com);
++            b.rates.linear_velocity = out(add(add(v(b.rates.linear_velocity), dv), cross(dw, lever)));
++            b.rates.angular_velocity = out(add(v(b.rates.angular_velocity), dw));
++        };
++        for b in rider.iter_mut().filter(|b| physical(b)) {
++            kick(b);
++        }
++        // The skeleton's animation drive targets ride in the same frame.
++        for b in carried.iter_mut() {
++            kick(b);
++        }
++        let reports = struck
++            .into_iter()
++            .map(|(position, mut report)| {
++                let shift = add(dv, cross(dw, sub(position, com)));
++                for k in 0..3 {
++                    report.body_b.linear_velocity[k] += shift[k] as f32;
++                }
++                report
++            })
++            .collect();
++        velocity = add(velocity, dv);
++        spin = add(spin, dw);
++        let host_body = &mut proxies[proxy];
++        host_body.rates.linear_velocity = out(sub(v(host_body.rates.linear_velocity), scale(j, host_inverse_mass)));
++        host_body.rates.angular_velocity =
++            out(sub(v(host_body.rates.angular_velocity), mul(&host_inverse_inertia, cross(rh, j))));
++        impacts.push(HostImpact {
++            proxy,
++            point: [pb[0] as f32, pb[1] as f32, pb[2] as f32],
++            impulse_on_host: [-j[0] as f32, -j[1] as f32, -j[2] as f32],
++            closing: closing as f32,
++            restitution: e as f32,
++            assembly_mass: mass as f32,
++            reports,
++        });
++    }
++    impacts
++}
++
++#[cfg(test)]
++#[path = "tests/host_impact.rs"]
++mod tests;
+--- a/crates/skate-core/src/physics/mod.rs
++++ b/crates/skate-core/src/physics/mod.rs
+@@ -30,6 +30,7 @@ pub mod drive_solver;
+ pub mod force_queue;
+ pub mod foot_physical_output;
+ pub mod hook_drive;
++pub mod host_impact;
+ pub mod joint_builder;
+ pub mod joint_records;
+ pub mod joint_solver;
+--- /dev/null
++++ b/crates/skate-core/src/physics/tests/host_impact.rs
+@@ -0,0 +1,109 @@
++use super::*;
++use crate::physics::{
++    contact::RetailContactInput,
++    rigid_body::{RetailBodyRates, RetailInertiaDynamics, RetailQuaternion, world_inverse_inertia},
++};
++
++const IDENTITY: Basis3 = Basis3 { columns: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
++
++/// A sphere-like body of `mass` kg (radius 0.3 m) at `position`.
++fn body(mass: f32, position: Vector3, velocity: Vector3) -> BodySnapshot {
++    let i = 1.0 / (0.4 * mass * 0.09);
++    let tensor = Vector3::new(i, i, i);
++    BodySnapshot {
++        state_flags: 4,
++        rates: RetailBodyRates {
++            orientation: RetailQuaternion { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
++            basis: IDENTITY,
++            world_inverse_inertia: world_inverse_inertia(IDENTITY, tensor),
++            position,
++            linear_velocity: velocity,
++            angular_velocity: Vector3::ZERO,
++            force_acceleration: Vector3::ZERO,
++            torque_acceleration: Vector3::ZERO,
++            kinetic_energy: 0.0,
++            cool_down: 0,
++        },
++        inertia: RetailInertiaDynamics {
++            inverse_tensor: tensor,
++            inverse_mass: 1.0 / mass,
++            spherical: 0.0,
++            maximum_linear_velocity: f32::MAX,
++            maximum_angular_velocity: f32::MAX,
++            linear_drag: 0.0,
++            angular_drag: 0.0,
++        },
++    }
++}
++
++/// One 80 kg rider part at (0, 1, 0) and a 1200 kg host body to its -x side
++/// moving at `host`; one contact at the rider's centre height, normal +x
++/// (host toward rider), `gap` apart.
++fn scene(rider: Vector3, host: Vector3, gap: f32) -> (BodySnapshot, BodySnapshot, BoardCollision) {
++    let part = body(80.0, Vector3::new(0.0, 1.0, 0.0), rider);
++    let car = body(1200.0, Vector3::new(-1.3 - gap, 1.0, 0.0), host);
++    let contact = BoardCollision {
++        body_a: CollisionBody::Attached(0),
++        body_b: CollisionBody::Attached(1),
++        contact: RetailContactInput {
++            position_on_a: Vector3::new(-0.3, 1.0, 0.0),
++            position_on_b: Vector3::new(-0.3 - gap, 1.0, 0.0),
++            normal: Vector3::new(1.0, 0.0, 0.0),
++            restitution: 0.0,
++            static_friction: 0.5,
++            dynamic_friction: 0.5,
++            tag: 7,
++        },
++    };
++    (part, car, contact)
++}
++
++#[test]
++fn a_car_striking_the_rider_carries_the_whole_assembly() {
++    let (mut part, car, contact) = scene(Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0), 0.05);
++    let mut cars = [car];
++    let impacts = resolve(&mut cars, 1, &[contact], &mut [&mut part], &mut [], 1, 1.0 / 60.0);
++    assert_eq!(impacts.len(), 1);
++    // Perfectly inelastic through the centre of mass: 10 * 1200 / 1280.
++    let v = part.rates.linear_velocity;
++    assert!((v.x - 9.375).abs() < 1e-3 && v.y.abs() < 1e-4 && v.z.abs() < 1e-4, "{v:?}");
++    // The host loses the same momentum (third law) and is told so.
++    assert!((impacts[0].impulse_on_host[0] + 750.0).abs() < 0.1, "{:?}", impacts[0]);
++    assert!((cars[0].rates.linear_velocity.x - 9.375).abs() < 1e-3);
++    // The skeleton feedback sees the hit at the pre-impact relative speed.
++    let report = impacts[0].reports[0];
++    assert_eq!(report.part, 0);
++    assert!((report.body_b.linear_velocity[0] - v.x - 10.0).abs() < 1e-3);
++}
++
++#[test]
++fn an_off_centre_hit_also_spins_the_assembly() {
++    let (mut part, car, mut contact) = scene(Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0), 0.05);
++    contact.contact.position_on_a.y = 1.25;
++    contact.contact.position_on_b.y = 1.25;
++    let mut cars = [car];
++    let impacts = resolve(&mut cars, 1, &[contact], &mut [&mut part], &mut [], 1, 1.0 / 60.0);
++    assert_eq!(impacts.len(), 1);
++    // A push along +x above the centre turns the body about -z.
++    assert!(part.rates.angular_velocity.z < -1.0, "{:?}", part.rates.angular_velocity);
++    // The contact points' normal speeds meet (inelastic): rider point at
++    // (-0.3, +0.25) from its centre, host point at (+1.0, +0.25) from its.
++    let w = part.rates.angular_velocity;
++    let at_point = part.rates.linear_velocity.x - w.z * 0.25;
++    let host = cars[0].rates.linear_velocity.x - cars[0].rates.angular_velocity.z * 0.25;
++    assert!((at_point - host).abs() < 1e-3, "{at_point} vs {host}");
++}
++
++#[test]
++fn sliding_parked_and_distant_bodies_are_left_to_the_solve() {
++    // Moving along the face: no motion into the contact.
++    let (mut p, car, c) = scene(Vector3::ZERO, Vector3::new(0.0, 0.0, 10.0), 0.05);
++    assert!(resolve(&mut [car], 1, &[c], &mut [&mut p], &mut [], 1, 1.0 / 60.0).is_empty());
++    // A parked car the rider skates into is a wall for the retail solve.
++    let (mut p, car, c) = scene(Vector3::new(-10.0, 0.0, 0.0), Vector3::ZERO, 0.05);
++    assert!(resolve(&mut [car], 1, &[c], &mut [&mut p], &mut [], 1, 1.0 / 60.0).is_empty());
++    // Closing at 10 m/s but 1 m away: not within this step.
++    let (mut p, car, c) = scene(Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0), 1.0);
++    assert!(resolve(&mut [car], 1, &[c], &mut [&mut p], &mut [], 1, 1.0 / 60.0).is_empty());
++    assert_eq!(p.rates.linear_velocity, Vector3::ZERO);
++}
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -5,7 +5,7 @@ use bevy::prelude::*;
+ use skate_data::skate_map::{Collision, Geometry, Rail, SkateMap};
+ use std::path::Path;
+ pub mod hud;
+-pub use super::host_bodies::{HostBody, HostImpulse};
++pub use super::host_bodies::{HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+ 
+ /// Synthetic HOST regression for the shared moving-entity query boundary.
+ /// Does not load retail assets or alter a live session.
+@@ -237,6 +237,11 @@ impl Session {
+     pub fn take_host_impulses(&mut self) -> Vec<super::host_bodies::HostImpulse> {
+         std::mem::take(&mut self.physics.host_bodies.impulses)
+     }
++    /// SkateV contact exchange: host-driven impacts (a car striking the rider)
++    /// since the last call, for diagnostics.
++    pub fn take_host_impacts(&mut self) -> Vec<super::host_bodies::HostImpactLog> {
++        std::mem::take(&mut self.physics.host_bodies.impact_log)
++    }
+     /// Inverse mass the solve used for each host entity tag (0: kinematic).
+     pub fn host_body_masses(&self) -> std::collections::HashMap<u32, f32> {
+         self.physics.host_bodies.inputs.iter().map(|b| (b.tag, b.inverse_mass)).collect()
+--- a/crates/skate-host/src/physics/host_bodies.rs
++++ b/crates/skate-host/src/physics/host_bodies.rs
+@@ -32,8 +32,16 @@ pub struct HostBody {
+     pub inverse_mass: f32,
+     /// Principal inverse inertia in the body frame (0: kinematic).
+     pub inverse_inertia: [f32; 3],
++    /// Skate collision group the skeleton's collision feedback reports for
++    /// this entity: VEHICLE_GROUP for a host vehicle (retail vehicle wipeout
++    /// path: Wipeout_GroundVehicleContact/Scalar), 0 (world) otherwise.
++    pub collision_group: u32,
+ }
+ 
++/// Retail collision group of vehicles: SkeletonCollision records its contact
++/// force as the wipeout's vehicle force (maximum_group_8_force).
++pub const VEHICLE_GROUP: u32 = 8;
++
+ /// Impulse (newton-seconds, Skate space) the board/skater applied to a host
+ /// entity at a world point during one solve.
+ #[derive(Clone, Copy, Debug, PartialEq)]
+@@ -43,6 +51,16 @@ pub struct HostImpulse {
+     pub impulse: [f32; 3],
+ }
+ 
++/// One host-driven impact for the runtime log (Skate space).
++#[derive(Clone, Copy, Debug)]
++pub struct HostImpactLog {
++    pub tag: u32,
++    pub closing: f32,
++    pub impulse: [f32; 3],
++    pub assembly_mass: f32,
++    pub struck_parts: usize,
++}
++
+ #[derive(Default)]
+ pub(crate) struct Proxies {
+     pub inputs: Vec<HostBody>,
+@@ -51,6 +69,13 @@ pub(crate) struct Proxies {
+     pub base: usize,
+     /// Impulses accumulated since the host last drained them.
+     pub impulses: Vec<HostImpulse>,
++    /// This solve's host-driven impacts on skeleton parts, as the contact
++    /// reports the solve would have produced at first touch (pre-impact
++    /// velocities). The solve no longer sees these closing contacts, so the
++    /// skeleton's collision feedback (bails) receives them from here.
++    pub impact_reports: Vec<skate_core::physics::skeleton_body::SkeletonContactReport>,
++    /// Impacts since the host last drained them (diagnostics).
++    pub impact_log: Vec<HostImpactLog>,
+ }
+ 
+ impl Proxies {
+@@ -88,6 +113,59 @@ impl Proxies {
+         }
+     }
+ 
++    /// Impacts driven by a host entity's own motion (a car striking the
++    /// rider), resolved before the shared solve on the whole board + rider
++    /// assembly (skate-core `host_impact`). The host receives each impulse
++    /// with the solve's own rows; the struck skeleton parts are reported to
++    /// the collision feedback through `impact_reports`. `rider`: every
++    /// physical board part followed by the skeleton bodies; `carried`: the
++    /// skeleton's drive targets. Returns the number of impacts.
++    pub fn impact(
++        &mut self,
++        contacts: &[skate_core::physics::board_step::BoardCollision],
++        rider: &mut [&mut BodySnapshot],
++        carried: &mut [BodySnapshot],
++        skeleton_parts: usize,
++        dt: f32,
++    ) -> usize {
++        self.impact_reports.clear();
++        // HOST A/B diagnostic: SKATEV_HOST_IMPACTS=0 leaves impacts to the solve.
++        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++        if *OFF.get_or_init(|| std::env::var("SKATEV_HOST_IMPACTS").is_ok_and(|v| v == "0")) {
++            return 0;
++        }
++        let impacts = skate_core::physics::host_impact::resolve(
++            &mut self.bodies, self.base, contacts, rider, carried, skeleton_parts, dt,
++        );
++        for impact in &impacts {
++            if std::env::var("SKATEV_EXCHANGE_TRACE").is_ok_and(|x| x == "1") {
++                eprintln!("EXCHANGE impact proxy={} closing={:.2} m/s e={:.2} impulse={:?} N s assembly {:.1} kg, {} skeleton reports",
++                    impact.proxy, impact.closing, impact.restitution, impact.impulse_on_host, impact.assembly_mass, impact.reports.len());
++            }
++            self.impulses.push(HostImpulse {
++                tag: self.inputs[impact.proxy].tag,
++                point: impact.point,
++                impulse: impact.impulse_on_host,
++            });
++            let group = self.inputs[impact.proxy].collision_group;
++            self.impact_reports.extend(impact.reports.iter().map(|r| {
++                let mut r = *r;
++                r.other_group = group;
++                r
++            }));
++            if self.impact_log.len() < 256 {
++                self.impact_log.push(HostImpactLog {
++                    tag: self.inputs[impact.proxy].tag,
++                    closing: impact.closing,
++                    impulse: impact.impulse_on_host,
++                    assembly_mass: impact.assembly_mass,
++                    struck_parts: impact.reports.len(),
++                });
++            }
++        }
++        impacts.len()
++    }
++
+     /// Host entity tag -> the proxy solver body standing for it, with the
+     /// entity's linear velocity.
+     pub fn body_map(&self) -> std::collections::HashMap<u32, (CollisionBody, Vector3)> {
+@@ -169,3 +247,4 @@ impl Proxies {
+         }
+     }
+ }
++
+--- a/crates/skate-host/src/physics/skeleton_feedback.rs
++++ b/crates/skate-host/src/physics/skeleton_feedback.rs
+@@ -153,11 +153,13 @@ fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> Vec<SkeletonContact
+                 other_group: match other {
+                     CollisionBody::StaticWorld => 0,
+                     CollisionBody::Board(_) => physics.board.collision_group(),
+-                    // SkateV: a moving host entity proxy (GTA vehicle/prop) is
+-                    // a world owner; its own velocity still enters the
+-                    // relative impact force through body_a/body_b.
++                    // SkateV: a moving host entity proxy reports its own group
++                    // (a GTA vehicle is Skate's vehicle group, a prop the
++                    // world); its velocity enters the relative impact force
++                    // through body_a/body_b.
+                     CollisionBody::Attached(index) if index >= physics.host_bodies.base
+-                        && index < physics.host_bodies.base + physics.host_bodies.bodies.len() => 0,
++                        && index < physics.host_bodies.base + physics.host_bodies.bodies.len() =>
++                        physics.host_bodies.inputs[index - physics.host_bodies.base].collision_group,
+                     CollisionBody::Attached(_) => skater.skeleton_collision.assembly_group,
+                 },
+                 other_entity: None,
+@@ -168,6 +170,16 @@ fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> Vec<SkeletonContact
+             });
+         }
+     }
++    // SkateV: host-driven impacts resolved before the solve (host_bodies::
++    // impact) report their first-touch contact here, after the solve's own.
++    for report in &physics.host_bodies.impact_reports {
++        if reports.len() == 16 {
++            break;
++        }
++        if report.part < 24 && !reports.iter().any(|r| r.part == report.part) {
++            reports.push(*report);
++        }
++    }
+     reports
+ }
+ fn resolve<'a>(
+--- a/crates/skate-host/src/physics/solve.rs
++++ b/crates/skate-host/src/physics/solve.rs
+@@ -31,7 +31,6 @@ pub(super) fn advance(
+         + physics.network_proxies.bodies.len();
+     let template = physics.board.bodies()[BodyId::Deck.index()];
+     physics.host_bodies.build(&template, host_base);
+-    let (_, momentum_before) = rider_momentum(physics, skater);
+     physics.world.set_dynamic_bodies(physics.host_bodies.body_map());
+     let mut board_volumes = colliders::world_volumes(&physics.board, &physics.settings);
+     board_volumes.retain(|volume| skater.board_possession_live.volume_enabled(volume.body));
+@@ -79,6 +78,33 @@ pub(super) fn advance(
+     physics.network_contacts = contacts.len() - before_remote;
+     physics.contact_count = contacts.len();
+     let dt = physics.settings.step.simulation.time_step;
++    // SkateV: host-driven impacts take the whole assembly first (see
++    // host_bodies::impact); the third-law bound below then covers only the
++    // solve's own rows. The drive targets carry the impact's velocity for this
++    // solve only: they are static bodies (retail rates stay zero) and nothing
++    // else clears them, so a kept velocity would drag the skeleton for good.
++    let target_rates = skater
++        .skeleton_drives
++        .targets
++        .bodies
++        .map(|b| (b.rates.linear_velocity, b.rates.angular_velocity));
++    {
++        let skeleton_parts = skater.skeleton.bodies().len();
++        let mut rider: Vec<_> = physics
++            .board
++            .bodies_mut()
++            .iter_mut()
++            .chain(skater.skeleton.bodies_mut().iter_mut())
++            .collect();
++        physics.host_bodies.impact(
++            &contacts,
++            &mut rider,
++            &mut skater.skeleton_drives.targets.bodies,
++            skeleton_parts,
++            dt,
++        );
++    }
++    let (_, momentum_before) = rider_momentum(physics, skater);
+     let mut joints =
+         skater
+             .skeleton_joints
+@@ -119,6 +145,10 @@ pub(super) fn advance(
+             external_from: host_base,
+         },
+     );
++    for (body, (linear, angular)) in skater.skeleton_drives.targets.bodies.iter_mut().zip(target_rates) {
++        body.rates.linear_velocity = linear;
++        body.rates.angular_velocity = angular;
++    }
+     let frequency = physics.settings.step.simulation.frequency;
+     let solved = physics.board.solved_contacts().to_vec();
+     let (mass, momentum_after) = rider_momentum(physics, skater);

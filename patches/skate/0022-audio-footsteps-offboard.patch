@@ -1,0 +1,38 @@
+--- a/crates/skate-host/src/physics/bridge/audio.rs
++++ b/crates/skate-host/src/physics/bridge/audio.rs
+@@ -79,6 +79,11 @@ pub struct AudioInput {
+     pub foot_flags: [u8; 2],
+     pub foot_height: [f32; 2],
+     pub foot_surface_tag: u32,
++    /// SkateV: footstep producers of packet827A1B78 (Air449/450, Air448,
++    /// Air224), published by fill824B0DA8 as game variables 716..768.
++    pub footplant_contact: [u8; 2],
++    pub footplant_active: u8,
++    pub footplant_surface: u32,
+     pub grind_contact: u8,
+     pub grind_family: u32,
+     pub grind_surface: u32,
+@@ -190,6 +195,11 @@ impl Session {
+             foot_height: [self.skater.skeleton.record.pose[15][3][1], self.skater.skeleton.record.pose[19][3][1]],
+             //82DB76C8/76DC deliberately publish the SAME Processed2596 tag.
+             foot_surface_tag: self.skater.player_input.processed.left_surface_2596,
++            //827A2654..2690: Air449 (left) / Air450 (right) footplant contact.
++            footplant_contact: [p.air.footplant_left_449, p.air.footplant_right_450],
++            //827A26C8..2710: Air448 replaces both foot surfaces by Air224.
++            footplant_active: p.air.flag_448,
++            footplant_surface: p.air.footplant_surface_224,
+             local_deck_angular_velocity: local_angular,
+             grind_contact: p.grinds.grinding_316,
+             grind_family: p.grinds.words_136_140[0],
+@@ -206,7 +216,10 @@ impl Session {
+             air_time: p.air.time_in_state_176,
+             air_scalar_184: p.air.scalar_184,
+             jump_height: p.air.jump_height_200,
+-            offboard: p.off_board.flag_308,
++            //827A27E0: packet164 bit1 is OffBoard311 (SkateboardController
++            //82D76D20), which fill824B0DA8 publishes as game variable308.
++            //OffBoard308 (Processed2480 bit19) is not that source.
++            offboard: p.off_board.flag_311,
+             pushing: flags[55 - 52],
+             foot_brake: flags[52 - 52],
+             push_contact: flags[56 - 52],

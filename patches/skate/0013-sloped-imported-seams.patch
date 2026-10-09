@@ -1,0 +1,203 @@
+--- a/crates/skate-core/src/physics/board_world.rs
++++ b/crates/skate-core/src/physics/board_world.rs
+@@ -402,7 +402,7 @@
+                 };
+                 let material = combine_contact_materials(volume.material, entry.material);
+                 for pair in &manifold.points[..manifold.count] {
+-                    if imported_floor_seams
++                    let internal = imported_floor_seams
+                         && imported_internal_floor_edge(
+                             index,
+                             entry,
+@@ -411,8 +411,23 @@
+                             &candidates,
+                             triangles,
+                             triangle_bounds,
+-                        )
+-                    {
++                        );
++                    // SkateV diagnostic (HOST replays only): SKATEV_CONTACT_TRACE=1
++                    // prints non-floor static contacts (2: all) with their source
++                    // triangle; `seam` marks contacts the seam filter dropped.
++                    let level = contact_trace_level();
++                    if level >= 2 || (level == 1 && manifold.normal.y.abs() < 0.9) {
++                        eprintln!(
++                            "CONTACT{} body={:?} tri={index} a=({:.3},{:.3},{:.3}) b=({:.3},{:.3},{:.3}) n=({:.3},{:.3},{:.3}) v=({:.2},{:.2},{:.2}) face=({:.3},{:.3},{:.3})",
++                            if internal { "-seam" } else { "" },
++                            volume.body, pair.a.x, pair.a.y, pair.a.z, pair.b.x, pair.b.y, pair.b.z,
++                            manifold.normal.x, manifold.normal.y, manifold.normal.z,
++                            volume.linear_velocity.x, volume.linear_velocity.y, volume.linear_velocity.z,
++                            entry.triangle.feature.normal.x, entry.triangle.feature.normal.y,
++                            entry.triangle.feature.normal.z,
++                        );
++                    }
++                    if internal {
+                         continue;
+                     }
+                     let contact = RetailContactInput {
+@@ -494,6 +509,15 @@
+     }
+ }
+ 
++/// Up component of a walkable face for SkateV's imported seam filter
++/// (cos 25.8 degrees, the curb-bevel walkable top limit in skatev-runtime).
++const IMPORTED_SEAM_MIN_UP: f32 = 0.9;
++
++fn contact_trace_level() -> u8 {
++    static LEVEL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
++    *LEVEL.get_or_init(|| std::env::var("SKATEV_CONTACT_TRACE").ok().and_then(|v| v.parse().ok()).unwrap_or(0))
++}
++
+ fn imported_internal_floor_edge(
+     source_index: usize,
+     source: &WorldTriangle,
+@@ -515,9 +539,13 @@
+             contact.z + sign * 0.005 * contact_normal.z / lateral,
+         )
+     };
+-    if face.y >= 0.98 && contact_normal.y > 0.05 {
+-        // A floor triangle's exposed edge is internal only where another
+-        // coplanar floor covers the point immediately beyond it.
++    if face.y >= IMPORTED_SEAM_MIN_UP && contact_normal.y > -0.5 {
++        // A walkable triangle's exposed edge is internal only where another
++        // coplanar walkable face covers the point immediately beyond it. This
++        // includes sloped faces (ramp plies, curb-bevel toes coplanar with a
++        // ramp) and edge contacts whose normal is nearly horizontal: at a
++        // coplanar seam those are ghosts that stop the board dead. A body
++        // under the face (normal pointing down) is never filtered.
+         let mut beyond = probe(1.);
+         let origin = source.triangle.vertices[0];
+         beyond.y =
+@@ -535,12 +563,15 @@
+     // A brush side ending at floor height is also internal when the same
+     // floor spans both sides. This catches buried sides of overlapping brush
+     // boxes without removing a true curb or a wall rising above the floor.
++    // A vertex higher than the contact still makes a wall, unless a walkable
++    // face covers it from above (a riser buried under a ramp lip whose edge
++    // is not level, beneath a coplanar curb-bevel toe).
+     if face.y.abs() > 0.2
+         || source
+             .triangle
+             .vertices
+             .iter()
+-            .any(|p| p.y > contact.y + 0.01)
++            .any(|&p| p.y > contact.y + 0.01 && !walkable_above(p, candidates, triangles, bounds))
+     {
+         return false;
+     }
+@@ -548,6 +579,24 @@
+         && floor_at(probe(1.), None, None, candidates, triangles, bounds)
+ }
+ 
++/// A walkable face passes over `point` at or above it (1 cm tolerance).
++fn walkable_above(point: Vector3, candidates: &[usize], triangles: &[WorldTriangle], bounds: &[Bounds]) -> bool {
++    candidates.iter().any(|&i| {
++        let other = &triangles[i];
++        let n = other.triangle.feature.normal;
++        if n.y < IMPORTED_SEAM_MIN_UP {
++            return false;
++        }
++        let b = bounds[i];
++        if point.x < b.min.x - 0.001 || point.x > b.max.x + 0.001 || point.z < b.min.z - 0.001 || point.z > b.max.z + 0.001 {
++            return false;
++        }
++        let p = other.triangle.vertices;
++        let height = p[0].y - (n.x * (point.x - p[0].x) + n.z * (point.z - p[0].z)) / n.y;
++        height >= point.y - 0.01 && point_in_floor_triangle(point, p)
++    })
++}
++
+ fn floor_at(
+     probe: Vector3,
+     excluded: Option<usize>,
+@@ -562,7 +611,7 @@
+         }
+         let other = &triangles[other_index];
+         let normal = other.triangle.feature.normal;
+-        if normal.y < 0.98
++        if normal.y < IMPORTED_SEAM_MIN_UP
+             || reference.is_some_and(|face| {
+                 face.x * normal.x + face.y * normal.y + face.z * normal.z < 0.999
+             })
+--- a/crates/skate-core/src/physics/board_world/tests.rs
++++ b/crates/skate-core/src/physics/board_world/tests.rs
+@@ -240,3 +240,79 @@
+     }
+     assert!(observed);
+ }
++
++// SkateV imported seams on sloped walkable faces (curb-bevel toes coplanar
++// with a ramp, ramp plies). Skate space: Y up.
++fn tri(points: [[f32; 3]; 3]) -> WorldTriangle {
++    WorldTriangle::from_vertices(points.map(|p| Vector3::new(p[0], p[1], p[2])), material(), 0, 0xe0, [1.; 3], 0.).unwrap()
++}
++fn seam(triangles: &[WorldTriangle], source: usize, contact: [f32; 3], normal: [f32; 3]) -> bool {
++    let bounds: Vec<Bounds> = triangles.iter().map(|t| Bounds::from_points(t.triangle.vertices).unwrap()).collect();
++    let candidates: Vec<usize> = (0..triangles.len()).collect();
++    let n = Vector3::new(normal[0], normal[1], normal[2]);
++    let len = (n.x * n.x + n.y * n.y + n.z * n.z).sqrt();
++    imported_internal_floor_edge(
++        source,
++        &triangles[source],
++        Vector3::new(contact[0], contact[1], contact[2]),
++        Vector3::new(n.x / len, n.y / len, n.z / len),
++        &candidates,
++        triangles,
++        &bounds,
++    )
++}
++/// A 15 degree ramp rising toward +x from its toe edge at x = 0 (height 0.1
++/// at z = -1), its toe edge rising `lateral` metres along z, and optionally
++/// its coplanar extension down to x = -0.37.
++fn ramp_rising(extension: bool, lateral: f32) -> Vec<WorldTriangle> {
++    let g = 15f32.to_radians().tan();
++    let h = |x: f32, z: f32| 0.1 + g * x + lateral * (z + 1.) / 2.;
++    let p = |x: f32, z: f32| [x, h(x, z), z];
++    // Counterclockwise seen from +Y.
++    let mut t = vec![tri([p(0., -1.), p(0., 1.), p(1., 1.)]), tri([p(0., -1.), p(1., 1.), p(1., -1.)])];
++    if extension {
++        t.push(tri([p(-0.37, -1.), p(-0.37, 1.), p(0., 1.)]));
++        t.push(tri([p(-0.37, -1.), p(0., 1.), p(0., -1.)]));
++    }
++    t
++}
++fn ramp(extension: bool) -> Vec<WorldTriangle> {
++    ramp_rising(extension, 0.)
++}
++
++#[test]
++fn sloped_coplanar_seam_edge_contact_is_internal() {
++    let world = ramp(true);
++    // Edge contact on the ramp top's toe edge, normal nearly horizontal and
++    // pointing back over the coplanar extension (the ghost that stopped the
++    // owner's board at a garage kicker).
++    assert!(seam(&world, 0, [0., 0.1, 0.2], [-0.66, -0.1, 0.0]));
++    assert!(seam(&world, 0, [0., 0.1, 0.2], [-0.66, 0.2, 0.0]));
++    // Without the extension the toe edge is a real lip.
++    assert!(!seam(&ramp(false), 0, [0., 0.1, 0.2], [-0.66, -0.1, 0.0]));
++    // A body under the ramp (normal pointing down) is never filtered.
++    assert!(!seam(&world, 0, [0., 0.1, 0.2], [-0.1, -0.99, 0.0]));
++}
++
++#[test]
++fn riser_buried_under_a_coplanar_toe_is_internal_but_a_wall_is_not() {
++    // The toe edge rises 2.5 cm along the lip (not level), like the garage.
++    let mut world = ramp_rising(true, 0.025);
++    // The lip's riser below the toe edge, its top following the edge.
++    let riser = world.len();
++    world.push(tri([[0., 0.0, -1.], [0., 0.125, 1.], [0., 0.0, 1.]]));
++    world.push(tri([[0., 0.0, -1.], [0., 0.1, -1.], [0., 0.125, 1.]]));
++    // Contact at the low end of the riser's top edge: its far vertex is 2.5 cm
++    // higher, but walkable faces cover it, so the riser is buried.
++    assert!(seam(&world, riser + 1, [0., 0.1, -1.], [-1.0, 0.05, 0.0]));
++    // Without the extension in front it is a real lip face.
++    let mut bare = ramp_rising(false, 0.025);
++    let r = bare.len();
++    bare.push(tri([[0., 0.0, -1.], [0., 0.125, 1.], [0., 0.0, 1.]]));
++    bare.push(tri([[0., 0.0, -1.], [0., 0.1, -1.], [0., 0.125, 1.]]));
++    assert!(!seam(&bare, r + 1, [0., 0.1, -1.], [-1.0, 0.05, 0.0]));
++    // A wall standing 30 cm above the contact with nothing walkable over it.
++    let wall = world.len();
++    world.push(tri([[2., 0.0, -1.], [2., 0.4, 1.], [2., 0.0, 1.]]));
++    assert!(!seam(&world, wall, [2., 0.1, 0.], [-1.0, 0.05, 0.0]));
++}

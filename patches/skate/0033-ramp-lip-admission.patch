@@ -1,0 +1,219 @@
+diff --git a/crates/skate-core/src/physics/grind_contact/admission.rs b/crates/skate-core/src/physics/grind_contact/admission.rs
+index 02ad4cf..099d0a6 100644
+--- a/crates/skate-core/src/physics/grind_contact/admission.rs
++++ b/crates/skate-core/src/physics/grind_contact/admission.rs
+@@ -30,8 +30,17 @@ pub struct Admission<'a> {
+     pub velocity: V,
+     /// physics_grinds/DVEntryThreshScalarVsSinSlope, X480/Y496.
+     pub threshold_vs_slope: &'a PointGraph<4>,
++    /// SkateV ramp-lip rule (patch 0033); false keeps retail admission.
++    pub skatev_lip_rule: bool,
++    /// The board is in an air it rolled into (off a lip, over a ramp's top)
++    /// rather than popped: its last ground state was not the pop
++    /// (GroundAnimation). Used only by the ramp-lip rule.
++    pub skatev_rolled_into_air: bool,
+ }
+ 
++/// Retail's drop-in speed: below it a rolling board may stall on any lip.
++const DROP_IN_SPEED: f32 = 1.45;
++
+ impl Admission<'_> {
+     pub fn test(&self, requested_state: u32, tangent: V, allows_drop_in: bool) -> Decision {
+         let kind = if self.category == 400 || self.state == 701 {
+@@ -41,10 +50,15 @@ impl Admission<'_> {
+                 EntryKind::ChangeGrind
+             }
+         } else if self.category == 100 {
+-            if allows_drop_in && self.speed < 1.45 {
++            let slope = approach_slope_sine(tangent, self.velocity);
++            // SkateV ramp-lip rule (owner runs 2026-10-03: trucks caught on
++            // every lip). A rolling board only stalls on a lip it rides up
++            // into (retail's from-below slope); rolling off a deck over its
++            // lip is a drop-in, not a stall.
++            let drop_in = allows_drop_in && self.speed < DROP_IN_SPEED;
++            if drop_in && (!self.skatev_lip_rule || slope > 0.25) {
+                 EntryKind::DropIn
+             } else {
+-                let slope = approach_slope_sine(tangent, self.velocity);
+                 if slope > 0.96 {
+                     EntryKind::RideIntoCoping
+                 } else if slope > 0.25 {
+@@ -60,7 +74,16 @@ impl Admission<'_> {
+             EntryKind::RideFromAbove => within_approach_angle(tangent, self.velocity, 17.0),
+             EntryKind::StayInGrind => within_approach_angle(tangent, self.velocity, 90.0),
+             EntryKind::ChangeGrind => within_approach_angle(tangent, self.velocity, 24.0),
+-            EntryKind::AirToGrind | EntryKind::DropIn => true,
++            // SkateV ramp-lip rule: an air the board rolled into (dropping
++            // in off a deck, carrying over a ramp's top) does not grind; the
++            // lip it just crossed caught the trucks (owner runs 2026-10-03,
++            // every coping catch an air-to-grind). A popped air grinds.
++            EntryKind::AirToGrind => !(self.skatev_lip_rule && self.skatev_rolled_into_air && self.category == 200),
++            EntryKind::DropIn => true,
++            // SkateV ramp-lip rule: riding up into a lip only stalls at
++            // retail's drop-in speed; faster, the board carries over the lip
++            // into the air (an ollie or air-to-grind still grinds it).
++            EntryKind::RideFromBelow | EntryKind::RideIntoCoping if self.skatev_lip_rule && self.speed >= DROP_IN_SPEED => false,
+             EntryKind::RideFromBelow | EntryKind::RideIntoCoping => {
+                 let square_speed = dot3(self.velocity, self.velocity);
+                 let transverse = sub(scale(tangent, dot3(self.velocity, tangent)), self.velocity);
+diff --git a/crates/skate-core/src/physics/grind_contact/admission_tests.rs b/crates/skate-core/src/physics/grind_contact/admission_tests.rs
+index 3748585..24e1731 100644
+--- a/crates/skate-core/src/physics/grind_contact/admission_tests.rs
++++ b/crates/skate-core/src/physics/grind_contact/admission_tests.rs
+@@ -3,7 +3,7 @@ use super::*;
+ const GRAPH: PointGraph<4> = PointGraph { x: [0.0, 0.3, 0.7, 1.0], y: [1.0; 4] };
+ const RAIL: V = [1.0, 0.0, 0.0, 0.0];
+ fn context(category: u32, state: u32, velocity: V) -> Admission<'static> {
+-    Admission { category, state, speed: 2.0, velocity, threshold_vs_slope: &GRAPH }
++    Admission { category, state, speed: 2.0, velocity, threshold_vs_slope: &GRAPH, skatev_lip_rule: false, skatev_rolled_into_air: false }
+ }
+ 
+ #[test]
+@@ -48,3 +48,33 @@ fn airborne_admission_and_projection_keep_the_original_leaf_boundary() {
+     assert_eq!(approach_slope_sine(RAIL, [3.0, 0.0, 0.0, 0.0]), 0.0);
+     assert_eq!(approach_slope_sine(RAIL, [3.0, 0.01, 0.0, 0.0]), 0.0);
+ }
++
++#[test]
++fn skatev_lip_rule_stalls_only_slow_boards_riding_up_into_a_lip() {
++    let rule = |speed: f32, velocity: V| Admission { speed, skatev_lip_rule: true, ..context(100, 100, velocity) };
++    // Rolling slowly off a deck over its lip (level or descending): no stall.
++    for velocity in [[0.2, 0.0, 1.0, 0.0], [0.2, -0.5, 1.0, 0.0]] {
++        let off_deck = rule(1.0, velocity);
++        assert_ne!(off_deck.test(403, RAIL, true).kind, EntryKind::DropIn);
++        assert!(!off_deck.test(403, RAIL, true).allowed);
++    }
++    // Riding slowly up into the lip: the stall stays, for every family.
++    let slow_up = rule(1.0, [0.2, 1.0, 0.5, 0.0]);
++    assert_eq!(slow_up.test(403, RAIL, true), Decision { kind: EntryKind::DropIn, allowed: true });
++    assert_eq!(slow_up.test(401, RAIL, false), Decision { kind: EntryKind::RideFromBelow, allowed: true });
++    // Riding up at speed: no catch, from below or straight into the coping.
++    for velocity in [[0.5, 2.0, 1.0, 0.0], [0.5, 2.0, 0.0, 0.0]] {
++        let fast_up = rule(2.0, velocity);
++        assert!(!fast_up.test(401, RAIL, false).allowed);
++        assert!(!fast_up.test(403, RAIL, true).allowed);
++        assert!(context(100, 100, velocity).test(401, RAIL, false).allowed, "retail admits it");
++    }
++    // Riding along a rail from above and air-to-grind are unchanged.
++    assert!(rule(3.0, [3.0, -0.2, 0.1, 0.0]).test(401, RAIL, false).allowed);
++    let air = Admission { category: 200, state: 201, ..rule(8.0, [0.0, 0.0, 8.0, 0.0]) };
++    assert_eq!(air.test(401, RAIL, false), Decision { kind: EntryKind::AirToGrind, allowed: true });
++    // An air the board rolled into does not grind; retail's does.
++    let rolled = Admission { skatev_rolled_into_air: true, ..air };
++    assert_eq!(rolled.test(401, RAIL, false), Decision { kind: EntryKind::AirToGrind, allowed: false });
++    assert!(Admission { skatev_lip_rule: false, ..rolled }.test(401, RAIL, false).allowed);
++}
+diff --git a/crates/skate-core/src/physics/grind_contact/tests.rs b/crates/skate-core/src/physics/grind_contact/tests.rs
+index 0561b60..cbac271 100644
+--- a/crates/skate-core/src/physics/grind_contact/tests.rs
++++ b/crates/skate-core/src/physics/grind_contact/tests.rs
+@@ -4,7 +4,7 @@ use crate::point_graph::PointGraph;
+ const BOARD: [V; 4] = [[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.],[0.;4]];
+ const GRAPH: PointGraph<4> = PointGraph { x: [0.,0.3,0.7,1.], y: [1.;4] };
+ fn admission(category: u32, state: u32) -> admission::Admission<'static> {
+-    admission::Admission { category, state, speed: 2., velocity: [0.,0.,2.,0.], threshold_vs_slope: &GRAPH }
++    admission::Admission { category, state, speed: 2., velocity: [0.,0.,2.,0.], threshold_vs_slope: &GRAPH, skatev_lip_rule: false, skatev_rolled_into_air: false }
+ }
+ fn rail(start: V, end: V) -> Primitive { Primitive { start, end, owner: 1 } }
+ 
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index 56b6cd1..42773d4 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -9,6 +9,7 @@ pub mod bail;
+ pub mod skitch;
+ pub mod hom;
+ pub mod hud;
++pub mod lips;
+ pub use super::host_bodies::{CHARACTER_GROUP, HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+ 
+ /// Synthetic HOST regression for the shared moving-entity query boundary.
+diff --git a/crates/skate-host/src/physics/bridge/lips.rs b/crates/skate-host/src/physics/bridge/lips.rs
+new file mode 100644
+index 0000000..0b634eb
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/lips.rs
+@@ -0,0 +1,16 @@
++//! SkateV ramp-lip rule (overlay patch 0033): a rolling board stalls on a lip
++//! only when it rides up into it below retail's drop-in speed; rolling off a
++//! deck over its lip, riding up into it faster, and an air the board rolled
++//! into (no pop) carry on without grinding. Popped airs grind as in retail.
++use super::Session;
++
++impl Session {
++    /// true (the default) applies the SkateV ramp-lip rule; false restores
++    /// retail grind admission for rolling boards.
++    pub fn set_lip_rule(&mut self, on: bool) {
++        self.skater.player_input.grind.skatev_lip_rule = on;
++    }
++    pub fn lip_rule(&self) -> bool {
++        self.skater.player_input.grind.skatev_lip_rule
++    }
++}
+diff --git a/crates/skate-host/src/physics/player_input/grind.rs b/crates/skate-host/src/physics/player_input/grind.rs
+index b83793d..21d8907 100644
+--- a/crates/skate-host/src/physics/player_input/grind.rs
++++ b/crates/skate-host/src/physics/player_input/grind.rs
+@@ -133,6 +133,12 @@ pub(crate) struct GrindInputState {
+     pub jumper: manager::Jumper,
+     pub investigation: GrindInvestigationFields,
+     settings: settings::Settings,
++    /// SkateV ramp-lip rule (patch 0033), on unless the host restores retail.
++    pub skatev_lip_rule: bool,
++    /// The current or next air was popped (left the ground through the pop,
++    /// GroundAnimation) or began off the board's other states; false while
++    /// rolling and through an air the board rolled into.
++    pub skatev_popped: bool,
+ }
+ 
+ impl GrindInputState {
+@@ -161,6 +167,8 @@ impl GrindInputState {
+             jumper: manager::Jumper::default(),
+             investigation: GrindInvestigationFields::default(),
+             settings: settings::Settings::load(data)?,
++            skatev_lip_rule: true,
++            skatev_popped: true,
+         })
+     }
+ 
+diff --git a/crates/skate-host/src/physics/player_input/grind/pre.rs b/crates/skate-host/src/physics/player_input/grind/pre.rs
+index 01132b5..bd25f29 100644
+--- a/crates/skate-host/src/physics/player_input/grind/pre.rs
++++ b/crates/skate-host/src/physics/player_input/grind/pre.rs
+@@ -16,6 +16,14 @@ impl GrindInputState {
+         self.previous_direction = float(self.investigation.direction_1136);
+         self.investigation = GrindInvestigationFields::default();
+         self.permission(p, context.air_counter);
++        // SkateV ramp-lip rule: how the board left the ground. Ground states
++        // record whether it is popping (GroundAnimation); an air keeps it;
++        // anything else (grinds, plants, bails) counts as popped.
++        match p.category_2512 {
++            100 => self.skatev_popped = p.state_2508 == 103,
++            200 => {}
++            _ => self.skatev_popped = true,
++        }
+         let indices = if p.flags_2476 & 0x0100_0000 != 0 {
+             Vec::new()
+         } else {
+@@ -40,6 +48,8 @@ impl GrindInputState {
+                     speed: p.scalar_2652,
+                     velocity: float(p.vectors_400_416[0]),
+                     threshold_vs_slope: &self.settings.slope_threshold,
++                    skatev_lip_rule: self.skatev_lip_rule,
++                    skatev_rolled_into_air: !self.skatev_popped,
+                 },
+                 flags_2468: p.flags_2468,
+                 flags_2472: p.flags_2472,
+diff --git a/crates/skate-host/src/physics/player_input/grind/tests.rs b/crates/skate-host/src/physics/player_input/grind/tests.rs
+index 4592d04..d062294 100644
+--- a/crates/skate-host/src/physics/player_input/grind/tests.rs
++++ b/crates/skate-host/src/physics/player_input/grind/tests.rs
+@@ -45,6 +45,8 @@ fn state() -> GrindInputState {
+             test_below: 0.2,
+             max_impact: 8.,
+         },
++        skatev_lip_rule: false,
++        skatev_popped: true,
+     }
+ }
+ 

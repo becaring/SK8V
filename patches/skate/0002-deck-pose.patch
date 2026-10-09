@@ -1,0 +1,20 @@
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index 4d30d53..3d7a9c6 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -162,6 +162,15 @@ impl Session {
+     pub fn score(&self) -> crate::scoring_runtime::View {
+         self.skater.scoring.view()
+     }
++    /// SkateV: the physical deck body (Skate world space): position and
++    /// orientation quaternion [x, y, z, w], for host board presentation.
++    pub fn deck(&self) -> ([f32; 3], [f32; 4]) {
++        let r = &self.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()].rates;
++        (
++            [r.position.x, r.position.y, r.position.z],
++            [r.orientation.x, r.orientation.y, r.orientation.z, r.orientation.w],
++        )
++    }
+     pub fn pose(&self) -> Pose {
+         let v = self.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()]
+             .rates

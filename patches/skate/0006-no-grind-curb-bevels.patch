@@ -1,0 +1,98 @@
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index aba15a9..c34f0d2 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -37,13 +37,25 @@ impl Session {
+         rails: Vec<Vec<[f32; 3]>>,
+         spawn: [f32; 3],
+         heading: f32,
++    ) -> Result<Self, String> {
++        Self::new_tagged(root, triangles, Vec::new(), rails, spawn, heading)
++    }
++
++    /// As `new`, with a tag per collision triangle (see `NO_GRIND_TAG`).
++    pub fn new_tagged(
++        root: &Path,
++        triangles: Vec<[[f32; 3]; 3]>,
++        tags: Vec<u32>,
++        rails: Vec<Vec<[f32; 3]>>,
++        spawn: [f32; 3],
++        heading: f32,
+     ) -> Result<Self, String> {
+         let started = std::time::Instant::now();
+         eprintln!("IW4L_SKATE_LOAD begin");
+         skate_data::input_config::StockGameplayConfig::load(root).map_err(|e| e.to_string())?;
+         let assets = skate_data::GameAssets::load(root).map_err(|e| e.to_string())?;
+         let graphs = StockGraphs::load(root, &assets)?;
+-        let map = collision_map(triangles, rails, spawn, heading);
++        let map = collision_map(triangles, tags, rails, spawn, heading);
+         eprintln!("IW4L_SKATE_LOAD graphs {}ms", started.elapsed().as_millis());
+         let physics = GamePhysics::load_with_map(root, Some(&map))?;
+         eprintln!(
+@@ -284,13 +296,29 @@ pub struct CollisionBuilder {
+     material: skate_core::physics::contact::RetailContactMaterial,
+ }
+ 
++/// SkateV: a host collision triangle that wheels and bodies collide with but
++/// grind line probes ignore (curb bevels: invisible ramps in front of curbs;
++/// a probe hitting one made the curb read as a slope, not a grindable lip).
++/// Stored in the triangle's tag, above the packed wheel-surface bits.
++pub const NO_GRIND_TAG: u32 = 1 << 30;
++
+ impl CollisionBuilder {
+     pub fn build(
+         &self,
+         triangles: Vec<[[f32; 3]; 3]>,
+         rails: Vec<Vec<[f32; 3]>>,
+     ) -> Result<PreparedCollision, String> {
+-        let map = collision_map(triangles, rails, [0.; 3], 0.);
++        self.build_tagged(triangles, Vec::new(), rails)
++    }
++
++    /// As `build`, with a tag per triangle (missing tags are 0).
++    pub fn build_tagged(
++        &self,
++        triangles: Vec<[[f32; 3]; 3]>,
++        tags: Vec<u32>,
++        rails: Vec<Vec<[f32; 3]>>,
++    ) -> Result<PreparedCollision, String> {
++        let map = collision_map(triangles, tags, rails, [0.; 3], 0.);
+         Ok(PreparedCollision {
+             world: crate::skate_world::collision_world(&map, self.material)?,
+             grind: std::sync::Arc::new(crate::grind_world::StaticProvider::new(Some(&map))?),
+@@ -301,6 +329,7 @@ impl CollisionBuilder {
+ /// IW4L's collision as a Skate map: one material, the triangles and rails.
+ fn collision_map(
+     triangles: Vec<[[f32; 3]; 3]>,
++    tags: Vec<u32>,
+     rails: Vec<Vec<[f32; 3]>>,
+     spawn: [f32; 3],
+     heading: f32,
+@@ -335,9 +364,10 @@ fn collision_map(
+                 indices: vec![],
+                 collision: triangles
+                     .into_iter()
+-                    .map(|points| Collision {
++                    .enumerate()
++                    .map(|(i, points)| Collision {
+                         points,
+-                        surface: 0,
++                        surface: tags.get(i).copied().unwrap_or(0),
+                         material: 1,
+                         native_edges: None,
+                     })
+diff --git a/crates/skate-host/src/physics/player_input/grind/world.rs b/crates/skate-host/src/physics/player_input/grind/world.rs
+index cb625cc..90ec06c 100644
+--- a/crates/skate-host/src/physics/player_input/grind/world.rs
++++ b/crates/skate-host/src/physics/player_input/grind/world.rs
+@@ -121,6 +121,10 @@ fn line(world: &BoardWorld, matching: i32, probe: Probe) -> Result<Option<ProbeH
+                 if !bounds.overlaps(triangle_bounds) {
+                     continue;
+                 }
++                // SkateV: host curb bevels are invisible to grind probes.
++                if triangle.tag & crate::physics::bridge::NO_GRIND_TAG != 0 {
++                    continue;
++                }
+                 let mut hit = TriangleLineHit {
+                     position: Vector3::ZERO,
+                     normal: Vector3::ZERO,

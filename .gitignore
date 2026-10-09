@@ -1,0 +1,51 @@
+# Builds
+build/
+target/
+**/target/
+out/
+dist/
+tools/bin/
+# machine-local cargo config (tools/build-release.py: path remaps)
+/.cargo/
+
+# Fetched sources and SDKs (tools/fetch-upstreams.ps1, tools/fetch-scripthookv.ps1)
+upstream/
+third_party/scripthookv/
+third_party/runtime/
+
+# World sidecars from a published release (BUILDING.md)
+/world/
+
+# Game data: never in this repository
+local/
+skate-data/
+*.xex
+*.iso
+*.rpf
+*.ybn
+*.ydr
+*.ydd
+*.yft
+*.ytd
+*.ymap
+*.ytyp
+
+# Logs and captures
+*.log
+*.dmp
+*.png
+!tools/board-wheel-icon.png
+*.jpg
+*.mp4
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Python bytecode
+__pycache__/

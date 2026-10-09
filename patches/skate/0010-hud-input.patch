@@ -1,0 +1,77 @@
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index c34f0d2..574c061 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -4,6 +4,7 @@ use crate::{camera::CameraRuntime, graph_runtime::StockGraphs, input::Controller
+ use bevy::prelude::*;
+ use skate_data::skate_map::{Collision, Geometry, Rail, SkateMap};
+ use std::path::Path;
++pub mod hud;
+ 
+ #[derive(Clone, Copy, Default)]
+ pub struct Controls {
+diff --git a/crates/skate-host/src/physics/bridge/hud.rs b/crates/skate-host/src/physics/bridge/hud.rs
+new file mode 100644
+index 0000000..0c91b8f
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/hud.rs
+@@ -0,0 +1,59 @@
++//! SkateV HUD input publication (overlay patch 0010). Read-only: nothing here
++//! changes scoring. It publishes the values the original APT `trickdisplay`
++//! bindings read, as the donor engine's `ScoringRuntime::hud_input`
++//! (skate-game/src/scoring_runtime.rs @ cb79689, lines 115-136) derives them,
++//! plus the scorer's per-tick HUD events (`new_trick`, `modified_trick`,
++//! `close_tricks`), which the donor's `scoring_hud::advance` forwards after
++//! every simulation tick.
++use super::Session;
++
++/// Skate's scorer as the original HUD movie consumes it, after the last tick.
++#[derive(Clone, Debug, Default, PartialEq)]
++pub struct HudInput {
++    /// Running sequence score (scorer `sequence_score`).
++    pub sequence_score: f32,
++    /// Line score (`session.holder.snapshot.line`).
++    pub line_score: f32,
++    /// Line timer points remaining (`session.line.points`).
++    pub line_points: f32,
++    /// Line drain per second (`ScoringData::line_drain`).
++    pub line_drain: f32,
++    /// Line timer capacity (`ScoringData::line_capacity`).
++    pub line_capacity: f32,
++    /// Combo multiplier (`session.combo.multiplier`).
++    pub multiplier: f32,
++    pub clean: bool,
++    pub sketchy: bool,
++    /// Switch, fakie, nollie, (unused) as announced with the trick.
++    pub stance: [bool; 4],
++    pub trick_name: String,
++    /// A trick was announced this tick.
++    pub new_trick: bool,
++    /// The current trick converted (e.g. into a combo name) this tick.
++    pub modified_trick: bool,
++    /// The sequence closed by a bail/reset this tick.
++    pub close_tricks: bool,
++}
++
++impl Session {
++    /// SkateV: the scorer's HUD publication after the last `advance`.
++    pub fn hud_input(&self) -> HudInput {
++        let scoring = &self.skater.scoring;
++        let view = scoring.view();
++        HudInput {
++            sequence_score: view.sequence_score,
++            line_score: view.line_score,
++            line_points: scoring.session.line.points,
++            line_drain: scoring.data.line_drain,
++            line_capacity: scoring.data.line_capacity,
++            multiplier: view.multiplier,
++            clean: view.clean,
++            sketchy: view.sketchy,
++            stance: [view.switch, view.fakie, view.nollie, false],
++            trick_name: view.trick_name,
++            new_trick: scoring.new_trick,
++            modified_trick: scoring.modified_trick,
++            close_tricks: scoring.close_tricks,
++        }
++    }
++}

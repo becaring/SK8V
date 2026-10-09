@@ -1,0 +1,145 @@
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -29,6 +29,9 @@
+     camera: CameraRuntime,
+     markers: crate::session_marker::Runtime,
+     audio_settings: audio::Settings,
++    /// SkateV skitching: per grab line tag, the model height the line was
++    /// raised to (kept while that line is held).
++    grab_heights: std::collections::HashMap<u32, f32>,
+ }
+ pub struct Pose {
+     pub root: Mat4,
+@@ -82,6 +85,7 @@
+             camera: CameraRuntime::load(root)?,
+             markers: crate::session_marker::Runtime::load(root)?,
+             audio_settings: audio::Settings::load(root)?,
++            grab_heights: Default::default(),
+         })
+     }
+     /// A builder for collision to swap in later, usable on another thread.
+@@ -230,9 +234,40 @@
+     /// previous set). Each becomes a LivingWorld vehicle object (provider
+     /// 82C35B98) whose one kind-1 spline is the line; its own dynamic
+     /// triangles (tagged `tag`) are its physical assembly.
++    ///
++    /// A line below the bottom of Skate's skitch detection box (Hash_8E3C
++    /// offset minus Hash_978B extent along the skater's up, from the skater's
++    /// animation frame) could never be detected: it is raised to that floor
++    /// plus 1 cm (a numeric guard so the endpoints are strictly inside), in
++    /// the car's model z. While a line is held its height is kept.
+     pub fn set_grab_lines(&mut self, lines: &[GrabLine]) -> Result<(), String> {
+         use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry};
+         use skate_core::player::offboard::grab_scene::registry::{Object, Provider, Spline};
++        use skate_core::player::state::PhysicalStateId;
++        let held = matches!(self.skater.player_state.current(), PhysicalStateId::Skitching)
++            .then_some(self.skater.skitch.skitch.id_1316);
++        let s = &self.skater.skitch.settings;
++        let frame = self.skater.player_input.processed.effective_anim_transform_192
++            .map(|v| v.map(f32::from_bits));
++        let floor = frame[3][1] + (s.detect_offset_8e3c[1] - s.detect_extents_978b[1]) + 0.01;
++        let mut heights = std::collections::HashMap::new();
++        let lines: Vec<GrabLine> = lines.iter().map(|l| {
++            let mut l = *l;
++            let up = l.frame[2][1];
++            let z = match (held == Some(l.tag), self.grab_heights.get(&l.tag)) {
++                (true, Some(&z)) => z,
++                _ => {
++                    let world = l.frame[3][1] + l.frame[0][1] * l.points[0][0]
++                        + l.frame[1][1] * l.points[0][1] + up * l.points[0][2];
++                    if up > 0.5 && world < floor { l.points[0][2] + (floor - world) / up } else { l.points[0][2] }
++                }
++            };
++            l.points[0][2] = z;
++            l.points[1][2] = z;
++            heights.insert(l.tag, z);
++            l
++        }).collect();
++        self.grab_heights = heights;
+         let objects = lines
+             .iter()
+             .filter(|l| l.tag != 0)
+@@ -531,7 +566,7 @@
+ /// A host vehicle's skitch grab line. `frame` rows are the entity's axes and
+ /// position in Skate space (points map as row0*x + row1*y + row2*z + row3);
+ /// `points` and `approach` are in the entity's model space.
+-#[derive(Clone, Debug)]
++#[derive(Clone, Copy, Debug)]
+ pub struct GrabLine {
+     pub tag: u32,
+     pub frame: [[f32; 4]; 4],
+--- a/crates/skate-host/src/physics/skitch_state.rs
++++ b/crates/skate-host/src/physics/skitch_state.rs
+@@ -95,6 +95,13 @@
+     }
+ }
+ 
++/// SkateV diagnostic (HOST replays only): SKATEV_SKITCH_TRACE=1 prints the
++/// skitch query and each record's detection result.
++fn trace() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| std::env::var("SKATEV_SKITCH_TRACE").is_ok_and(|v| v == "1"))
++}
++
+ ///PhysicsGround Update82D37C88 tail: GrabWorld (Processed2476 bit22) runs
+ ///82D39BB8; otherwise82D749D0 cancels the grab-spline owner's queries.
+ pub(super) fn ground_query(_physics: &GamePhysics, skater: &mut SkaterRuntime) {
+@@ -107,6 +114,11 @@
+     let frame = p.effective_anim_transform_192.map(|v| v.map(f32::from_bits));
+     let bounds = skitch_bounds(frame, s.detect_offset_8e3c, s.detect_extents_978b);
+     let position = p.vectors_544_560_592_608[2].map(f32::from_bits);
++    if trace() {
++        eprintln!("SKITCH_QUERY detect={} validated={} frame3={:?} box={:?} ext={:?}",
++            skater.offboard_grab.flags_12836 & 0x40 != 0, skater.offboard_grab.validated().len(),
++            frame[3], bounds.frame[3], bounds.extents);
++    }
+     let context = QueryContext {
+         selection_flags_2948: p.actor_query_2948,
+         matching_id_2952: p.actor_query_2952 as i32,
+@@ -153,6 +165,9 @@
+         let descriptor = record.descriptor();
+         let box_ = if descriptor.kind == 2 { inner } else { bounds };
+         if !grab_scene::qualify(&record, position, box_, limits) {
++            if trace() {
++                eprintln!("SKITCH_REJECT id={:08x} kind={} a={a:?} b={b:?}", descriptor.id, descriptor.kind);
++            }
+             continue;
+         }
+         if p.ground_timer_2848 > 0.0
+@@ -171,6 +186,9 @@
+         let time = (dot(sub(world, frame[3]), frame[2]) - s.detect_distance_bf43) * reciprocal(closing);
+         let time = if time >= 0.0 { time } else { 0.0 };
+         g.scalar_2664 = time;
++        if trace() {
++            eprintln!("SKITCH_QUALIFY id={:08x} time={time:.3} limit={:.3}", descriptor.id, s.detect_time_424a);
++        }
+         skater.offboard_grab.request_primary(descriptor);
+         if time < s.detect_time_424a {
+             g.flag_2729 = true;
+--- a/crates/skate-host/src/skate_world.rs
++++ b/crates/skate-host/src/skate_world.rs
+@@ -294,10 +294,23 @@
+             }
+         }
+         for (v, faces) in adjacent.iter().enumerate() {
++            // A vertex is a corner only where three or more planes meet. On
++            // one plane (interior), or on the straight crease where exactly
++            // two planes meet (a ledge or rail edge split into several
++            // triangles), its contact cone is the edge's: disable it so the
++            // TU3 fixup bends a vertex hit onto the bordering convex edge
++            // instead of returning a normal along the crease.
+             let reference = normals[faces[0]];
++            let coplanar = |n: Vec3, m: Vec3| (n.dot(m) - 1.).abs() <= 0.01;
++            // SKATEV_CREASE_VERTICES=0 restores the coplanar-only rule (A/B diagnostics).
++            let creases = std::env::var("SKATEV_CREASE_VERTICES").map_or(true, |v| v != "0");
++            let other = faces
++                .iter()
++                .map(|&i| normals[i])
++                .find(|&n| creases && !coplanar(reference, n));
+             if faces
+                 .iter()
+-                .all(|&i| (reference.dot(normals[i]) - 1.).abs() <= 0.01)
++                .all(|&i| coplanar(reference, normals[i]) || other.is_some_and(|o| coplanar(o, normals[i])))
+             {
+                 for &i in faces {
+                     for corner in 0..3 {

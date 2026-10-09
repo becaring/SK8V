@@ -1,0 +1,329 @@
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -438,3 +438,5 @@
+ }
+ 
+ pub mod lifecycle;
++
++pub mod audio;
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/audio.rs
+@@ -0,0 +1,223 @@
++//! Read-only audio publication from completed physical output records.
++//! The audio struct's source offsets are recorded in gv_skater.rs. Expose
++//! only fields whose producer exists; do not synthesize absent audio state.
++use super::Session;
++
++pub(super) struct Settings {
++    slip_scale: f32, slip_offset: f32, wheel_impact_scale: f32,
++    wheel_classes_from_air: bool, wheel_impact_thresholds: [f32; 2], wheel_air_thresholds: [f32; 2],
++    tricks: Vec<(skate_core::animation::output::attributes::AttributeName, TrickAudio)>,
++}
++#[derive(Clone, Copy, Debug)]
++pub struct TrickAudio { pub ids: [i32; 2], pub attribute: bool }
++impl Settings {
++    pub(super) fn load(root: &std::path::Path) -> Result<Self, String> {
++        let data = skate_data::collections::Collections::load(root)?;
++        let class = "Hash_C1831BDB6CB1B1EA";
++        let key = "Hash_BA9837A6CF4C26ED";
++        //827A1FEC..2010 reads the actual scoring-trick collection layout.
++        //Private AttribSys comparison confirms these fields at164/172/176.
++        let mut tricks = Vec::new();
++        for definition in skate_data::scoring::ScoringData::load(&data)?.definitions {
++            let class = "Hash_6918469984A8C596";
++            let key = definition.identifier;
++            tricks.push((definition.encoded_name, TrickAudio {
++                ids: [data.words::<1>(class,key,"Hash_8C3025DB4D1761AF")?[0] as i32,
++                      data.words::<1>(class,key,"Hash_A2C5C22C5BE725F8")?[0] as i32],
++                attribute: data.boolean(class,key,"Hash_7B9298C7883E2FA2")?,
++            }));
++        }
++        Ok(Self {
++            tricks,
++            slip_scale: data.float(class, key, "Hash_56D931D202881C2D")?,
++            slip_offset: data.float(class, key, "Hash_E6C3FFE8AA70F944")?,
++            wheel_impact_scale: data.float("Hash_C26949FCB638A2CA", "default", "Hash_3D399FE04952B425")?,
++            wheel_classes_from_air: data.boolean("Hash_C26949FCB638A2CA", "default", "Hash_642CF9BFEC6BE988")?,
++            wheel_impact_thresholds: [
++                data.float("Hash_C26949FCB638A2CA", "default", "Hash_63B9250BE57DA556")?,
++                data.float("Hash_C26949FCB638A2CA", "default", "Hash_1578F5AD78C9A844")?],
++            wheel_air_thresholds: [
++                data.float("Hash_C26949FCB638A2CA", "default", "Hash_2A70BB8A382574E4")?,
++                data.float("Hash_C26949FCB638A2CA", "default", "Hash_6D3D91A9BA7ADCDC")?],
++        })
++    }
++}
++
++pub fn native_length(v: [f32; 4]) -> f32 {
++    skate_core::physics::board_motion_output::length(
++        skate_core::math::Vector3::new(v[0], v[1], v[2]))
++}
++pub fn native_dot(a: [f32; 4], b: [f32; 4]) -> f32 {
++    use skate_core::math::Vector3;
++    skate_core::physics::board_motion_output::dot(Vector3::new(a[0], a[1], a[2]), Vector3::new(b[0], b[1], b[2]))
++}
++
++#[derive(Clone, Debug, Default)]
++pub struct AudioInput {
++    pub body_specific_contacts: [bool; 2],
++    pub root_angular_speed: f32,
++    pub limb_relative_speeds: [f32; 4],
++    pub trick: Option<TrickAudio>,
++    pub body_contact_valid: [bool; 8],
++    pub body_contact_force: [f32; 8],
++    pub body_contact_surface: [u32; 8],
++    pub button_mask: u32,
++    pub side_slip: f32,
++    pub wheel_impact_scale: f32,
++    pub wheel_classes_from_air: bool,
++    pub wheel_impact_thresholds: [f32; 2],
++    pub wheel_air_thresholds: [f32; 2],
++    pub air_no_wheel_contact: bool,
++    pub wheel_position: [[f32; 4]; 4],
++    pub wheel_velocity: [[f32; 4]; 4],
++    pub wheel_normal: [[f32; 4]; 4],
++    pub turn: f32,
++    pub part_audio_surfaces: [u32; 7],
++    pub wheel_seam_patterns: [u32; 4],
++    pub wheel_contact: [u8; 4],
++    pub wheel_contact_count: u32,
++    pub foot_flags: [u8; 2],
++    pub foot_height: [f32; 2],
++    pub foot_surface_tag: u32,
++    pub grind_contact: u8,
++    pub grind_family: u32,
++    pub grind_surface: u32,
++    pub grind_impact: f32,
++    pub grind_flag_323: u8,
++    pub state_category: u32,
++    pub state_id: u32,
++    pub landing_velocity_delta: [f32; 4],
++    pub landing_level_valid: bool,
++    pub local_deck_angular_velocity: [f32; 3],
++    pub board_ground_speed: f32,
++    pub com_velocity: [f32; 4],
++    pub air_time: f32,
++    pub air_scalar_184: f32,
++    pub jump_height: f32,
++    pub offboard: u8,
++    /// State+55, packed at packet148 bit30 by827A1D48.
++    pub pushing: bool,
++    pub foot_brake: bool,
++    pub push_contact: bool,
++    pub push_right_toe: bool,
++    pub manual_brake: bool,
++    pub manual: bool,
++    pub wiping_out: bool,
++    pub revert: bool,
++    /// Completed Skeleton output flags, not animation/state-name guesses.
++    pub left_foot_within_deck: u8,
++    pub right_foot_within_deck: u8,
++    pub skeleton_over: u8,
++}
++
++impl Session {
++    pub fn audio_input(&self) -> AudioInput {
++        let p = &self.skater.player_input.physical;
++        let flags = &self.skater.player_state.state_flags;
++        //82C02ADC..2B20 publishes the unadjusted physical deck transform to
++        //SkateboardReckoning0; effective stance transform starts at64.
++        let basis = self.physics.board.part_transforms()[
++            skate_core::physics::board::BodyId::Deck.index()].basis.columns;
++        let angular = p.skateboard.vector_64.map(f32::from_bits);
++        //82772850..28A4 multiplies by the transpose of that raw basis.
++        let local_angular = core::array::from_fn(|i| {
++            basis[i][2].mul_add(angular[2],
++                basis[i][1].mul_add(angular[1], basis[i][0] * angular[0]))
++        });
++        //82772E18 uses raw SkateboardReckoning0 (not effective stance64).
++        let linear = p.skateboard.vector_80.map(f32::from_bits);
++        let lateral = native_dot(
++            [basis[0][0], basis[0][1], basis[0][2], 0.0], linear).abs();
++        let slip = ((lateral - self.audio_settings.slip_offset).max(0.0)
++            / self.audio_settings.slip_scale).min(1.0);
++        AudioInput {
++            //82BD6A20 publishes current groin/face contact, not a sliding flag.
++            body_specific_contacts: core::array::from_fn(|i| self.skater.collision_feedback.specific[i].current),
++            //82BE50CC confirms assembly stride96 and rates pointer+76;
++            //82BE1F00 reads part23, Rates48 (angular), into Skeleton288.
++            root_angular_speed: {
++                let v = self.skater.skeleton.bodies()[23].rates.angular_velocity;
++                native_length([v.x, v.y, v.z, 0.0])
++            },
++            //82BE1F7C..20DC: pose-derived limb velocities minus Reckoning16.
++            limb_relative_speeds: [17,21,4,8].map(|i| {
++                let v = self.skater.skeleton.record.velocities[i];
++                let com = p.reckoning.vector_16.map(f32::from_bits);
++                native_length(core::array::from_fn(|j| v[j] - com[j]))
++            }),
++            //82DAC498 publishes the UNFILTERED first score name when either
++            //score flag24/25 is set. Do not substitute a HUD label, carrier,
++            //delayed announcement, or the permission-filtered second ID.
++            trick: if self.skater.animation.motion.score_packet.flags & 0x0300_0000 != 0 {
++                self.skater.animation.motion.score_packet.trick_names.first.and_then(|name|
++                    self.audio_settings.tricks.iter().find(|(n,_)|*n==name).map(|(_,v)|*v))
++            } else { None },
++            //82BD68F0..69D0: force clears on no part; material retains its old value.
++            body_contact_valid: core::array::from_fn(|i| self.skater.collision_feedback.regions[i].part.is_some()),
++            body_contact_force: core::array::from_fn(|i| self.skater.collision_feedback.regions[i].force),
++            body_contact_surface: core::array::from_fn(|i| self.skater.collision_feedback.regions[i].material_flags),
++            button_mask: u32::from(self.input.raw_input().buttons),
++            side_slip: if p.collision.wheel_count_0 > 0 { slip } else { 0.0 },
++            wheel_impact_scale: self.audio_settings.wheel_impact_scale,
++            wheel_classes_from_air: self.audio_settings.wheel_classes_from_air,
++            wheel_impact_thresholds: self.audio_settings.wheel_impact_thresholds,
++            wheel_air_thresholds: self.audio_settings.wheel_air_thresholds,
++            //82DB760C..766C: state ID200..299 and Collision0==0.
++            air_no_wheel_contact: (200..300).contains(&p.state.state_16) && p.collision.wheel_count_0 == 0,
++            //82C03284..32C4 copies wheel Rates16 to SkateboardReckoning208..256.
++            wheel_position: core::array::from_fn(|i| {
++                let p = self.physics.board.bodies()[i].rates.position;
++                [p.x, p.y, p.z, 0.0]
++            }),
++            //82C02D54 Motion208..256 copies actual wheel rigid-body velocity.
++            wheel_velocity: core::array::from_fn(|i| {
++                let v = self.physics.board.bodies()[i].rates.linear_velocity;
++                [v.x, v.y, v.z, 0.0]
++            }),
++            //82C02DA8 Collision3376..3424 uses contact normal, zero on miss.
++            wheel_normal: core::array::from_fn(|i| {
++                let p = self.physics.riding.ground.parts[i];
++                if p.in_contact { [p.normal.x, p.normal.y, p.normal.z, 0.0] } else { [0.0; 4] }
++            }),
++            //Shared completed Processed2676 used by PhysicalFeedback.
++            turn: self.skater.animation_input.fields.turn,
++            part_audio_surfaces: self.physics.riding.ground.audio_surfaces,
++            wheel_seam_patterns: core::array::from_fn(|i| self.physics.riding.ground.seam_patterns[i]),
++            wheel_contact: p.collision.wheel_contact_3296_3299,
++            wheel_contact_count: p.collision.wheel_count_0,
++            foot_flags: p.off_board.flags_306_307,
++            //82BE1EC0/1ECC: Skeleton9024/9280 are pose15/19 translations.
++            foot_height: [self.skater.skeleton.record.pose[15][3][1], self.skater.skeleton.record.pose[19][3][1]],
++            //82DB76C8/76DC deliberately publish the SAME Processed2596 tag.
++            foot_surface_tag: self.skater.player_input.processed.left_surface_2596,
++            local_deck_angular_velocity: local_angular,
++            grind_contact: p.grinds.grinding_316,
++            grind_family: p.grinds.words_136_140[0],
++            grind_surface: p.grinds.audio_surface_216,
++            grind_impact: p.grinds.impact_speed_128,
++            grind_flag_323: p.grinds.flag_323,
++            state_category: p.state.category_12,
++            state_id: p.state.state_16,
++            landing_velocity_delta: p.air.jump_velocity_delta_112.map(f32::from_bits),
++            //82DB7494 rotates Processed2468 bit22 into Air440.
++            landing_level_valid: self.skater.player_input.processed.flags_2468 & (1 << 22) != 0,
++            board_ground_speed: p.skateboard.scalar_164,
++            com_velocity: p.reckoning.vector_16.map(f32::from_bits),
++            air_time: p.air.time_in_state_176,
++            air_scalar_184: p.air.scalar_184,
++            jump_height: p.air.jump_height_200,
++            offboard: p.off_board.flag_308,
++            pushing: flags[55 - 52],
++            foot_brake: flags[52 - 52],
++            push_contact: flags[56 - 52],
++            push_right_toe: flags[57 - 52],
++            manual_brake: flags[54 - 52],
++            manual: flags[60 - 52],
++            wiping_out: flags[59 - 52],
++            revert: flags[66 - 52],
++            left_foot_within_deck: p.skeleton.flag_600,
++            right_foot_within_deck: p.skeleton.flag_601,
++            skeleton_over: p.skeleton.over_599,
++        }
++    }
++}
+--- a/crates/skate-core/src/physics/board_ground.rs
++++ b/crates/skate-core/src/physics/board_ground.rs
+@@ -47,6 +47,9 @@
+     pub normals: [Vector3; 4],
+     pub distances: [f32; 4],
+     pub physics_surfaces: [u32; 4],
++    ///82C07A78..8C, retained separately from the five-bit physics class.
++    pub audio_surfaces: [u32; 4],
++    pub seam_patterns: [u32; 4],
+     pub minimum_distance: f32,
+ }
+ impl Default for WheelLineState {
+@@ -56,6 +59,8 @@
+             normals: [UP; 4],
+             distances: [0.0; 4],
+             physics_surfaces: [0; 4],
++            audio_surfaces: [0; 4],
++            seam_patterns: [0; 4],
+             minimum_distance: 0.0,
+         }
+     }
+@@ -67,6 +72,8 @@
+         self.minimum_distance = WHEEL_LINE_LENGTH;
+         for (i, hit) in hits.into_iter().enumerate() {
+             self.physics_surfaces[i] = 0;
++            self.audio_surfaces[i] = 0;
++            self.seam_patterns[i] = 0;
+             if let Some(hit) = hit {
+                 let distance = hit.fraction * WHEEL_LINE_LENGTH;
+                 self.minimum_distance = if distance - self.minimum_distance >= -0.0 {
+@@ -77,6 +84,8 @@
+                 self.normals[i] = hit.normal;
+                 self.distances[i] = distance;
+                 self.physics_surfaces[i] = (hit.surface_tag >> 7) & 31;
++                self.audio_surfaces[i] = hit.surface_tag & 127;
++                self.seam_patterns[i] = (hit.surface_tag >> 12) & 15;
+             }
+         }
+     }
+@@ -95,6 +104,9 @@
+ 
+ #[derive(Clone, Debug, PartialEq)]
+ pub struct BoardGroundState {
++    ///CollisionInfo720..744; wheels use line results, remaining parts actual reports.
++    pub audio_surfaces: [u32; BODY_COUNT],
++    pub seam_patterns: [u32; BODY_COUNT],
+     pub parts: [PartGroundContact; BODY_COUNT],
+     /// BoardBody320..416, retained between postphysics updates.
+     pub previous_velocities: [Vector3; BODY_COUNT],
+@@ -127,6 +139,7 @@
+ impl Default for BoardGroundState {
+     fn default() -> Self {
+         Self {
++            audio_surfaces: [0; BODY_COUNT], seam_patterns: [0; BODY_COUNT],
+             parts: [EMPTY_PART; BODY_COUNT], overall_normal: UP, wheel_normal: UP,
+             // CollisionInfo ctor82C00DC8/CC zeros both arrays. Board reset
+             //82C0D758 calls that constructor again; per-frame reset retains velocities.
+@@ -173,6 +186,10 @@
+         board_wiping_out: bool,
+     ) {
+         self.parts.fill(EMPTY_PART);
++        self.audio_surfaces[..4].copy_from_slice(&lines.audio_surfaces);
++        self.seam_patterns[..4].copy_from_slice(&lines.seam_patterns);
++        self.audio_surfaces[4..].fill(0);
++        self.seam_patterns[4..].fill(0);
+         //CollisionInfo Reset82C00CA0 clears per-frame impacts and high flags.
+         self.closing_velocity = Vector3::ZERO;
+         self.maximum_closing_speed = 0.0;
+@@ -214,6 +231,8 @@
+             }
+             if i >= 4 {
+                 surfaces[i] = surface; //82C081B4..81E0, last report wins.
++                self.audio_surfaces[i] = u32::from(report.other_surface) & 127;
++                self.seam_patterns[i] = (u32::from(report.other_surface) >> 12) & 15;
+             }
+             let contact = &mut self.parts[i];
+             if !contact.in_contact || report.normal.y > contact.normal.y {
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -27,6 +27,7 @@
+     input: ControllerInput,
+     camera: CameraRuntime,
+     markers: crate::session_marker::Runtime,
++    audio_settings: audio::Settings,
+ }
+ pub struct Pose {
+     pub root: Mat4,
+@@ -79,6 +80,7 @@
+             input: ControllerInput::default(),
+             camera: CameraRuntime::load(root)?,
+             markers: crate::session_marker::Runtime::load(root)?,
++            audio_settings: audio::Settings::load(root)?,
+         })
+     }
+     /// A builder for collision to swap in later, usable on another thread.

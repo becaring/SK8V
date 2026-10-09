@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["svwc", "world-cache", "skatev-runtime", "ped-export", "skate-aems", "skate-hud", "skate-xma"]
+
+# The runtime runs inside GTA: unwind so panics can be caught at the C ABI
+# and on the Skate worker instead of taking the game process down.
+[profile.release]
+lto = "thin"
+codegen-units = 8
+panic = "unwind"
+debug = "line-tables-only"
+
+# Skate simulation is too slow unoptimised to be useful even in debug runs.
+[profile.dev.package."*"]
+opt-level = 2

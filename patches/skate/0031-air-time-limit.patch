@@ -1,0 +1,70 @@
+diff --git a/crates/skate-core/src/player/selector/mod.rs b/crates/skate-core/src/player/selector/mod.rs
+index c97a711..8f7858f 100644
+--- a/crates/skate-core/src/player/selector/mod.rs
++++ b/crates/skate-core/src/player/selector/mod.rs
+@@ -28,6 +28,9 @@ pub struct StateSelector {
+     pub skitch_exit_countdown: i32,
+     pub revert_exited_normally: bool,
+     pub request_teleport: bool,
++    /// SkateV (overlay patch 0031): the host's replacement for the air-frame
++    /// teleport limit below (None: the retail limit; i32::MAX: none).
++    pub skatev_max_air_frames: Option<i32>,
+ }
+ 
+ #[derive(Clone, Copy)]
+@@ -114,7 +117,7 @@ impl StateSelector {
+         if p.has_2468(2) || p.has_2472(0x4_0000) {
+             return PhysicalStateId::Teleporting;
+         }
+-        if self.air_frames > 300 {
++        if self.air_frames > self.skatev_max_air_frames.unwrap_or(300) {
+             self.request_teleport = true;
+             return current;
+         }
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index 9b44180..fa2a6f9 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -4,6 +4,7 @@ use crate::{camera::CameraRuntime, graph_runtime::StockGraphs, input::Controller
+ use bevy::prelude::*;
+ use skate_data::skate_map::{Collision, Geometry, Rail, SkateMap};
+ use std::path::Path;
++pub mod air;
+ pub mod bail;
+ pub mod hom;
+ pub mod hud;
+diff --git a/crates/skate-host/src/physics/bridge/air.rs b/crates/skate-host/src/physics/bridge/air.rs
+new file mode 100644
+index 0000000..1b9c3b4
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/air.rs
+@@ -0,0 +1,29 @@
++//! SkateV air time (overlay patch 0031). The host's replacement for the state
++//! selector's air-frame teleport, which snaps a skater who stays airborne too
++//! long back to the last checkpoint; GTA drops (building roofs, cliffs) are
++//! much longer than any Skate 3 drop.
++use super::Session;
++
++impl Session {
++    /// Replaces the selector's air-frame teleport limit, in Skate seconds:
++    /// None restores the retail limit; f32::INFINITY removes it.
++    pub fn set_air_time_limit(&mut self, seconds: Option<f32>) {
++        let period = self.period();
++        self.skater.player_state.selector.skatev_max_air_frames =
++            seconds.filter(|t| !t.is_nan() && *t > 0.0).map(|t| {
++                if t.is_finite() && period > 0.0 {
++                    (t / period).ceil().min(i32::MAX as f32) as i32
++                } else {
++                    i32::MAX
++                }
++            });
++    }
++    /// Consecutive airborne frames the selector has counted.
++    pub fn air_frames(&self) -> i32 {
++        self.skater.player_state.selector.air_frames
++    }
++    /// The last `advance` hit the air-frame limit and requested the teleport.
++    pub fn air_teleport_requested(&self) -> bool {
++        self.skater.player_state.selector.request_teleport
++    }
++}

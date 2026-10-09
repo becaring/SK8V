@@ -1,0 +1,307 @@
+--- a/crates/skate-core/src/physics/board_world/tests.rs
++++ b/crates/skate-core/src/physics/board_world/tests.rs
+@@ -316,3 +316,113 @@ fn riser_buried_under_a_coplanar_toe_is_internal_but_a_wall_is_not() {
+     world.push(tri([[2., 0.0, -1.], [2., 0.4, 1.], [2., 0.0, 1.]]));
+     assert!(!seam(&world, wall, [2., 0.1, 0.], [-1.0, 0.05, 0.0]));
+ }
++
++// SkateV near-coplanar gap rule. Skate space: Y up; the board travels +x.
++fn floor(x0: f32, x1: f32, y: f32) -> [WorldTriangle; 2] {
++    let p = |x: f32, z: f32| [x, y, z];
++    [tri([p(x0, -1.), p(x0, 1.), p(x1, 1.)]), tri([p(x0, -1.), p(x1, 1.), p(x1, -1.)])]
++}
++/// A riser at `x` from `y0` up to `y1`, facing -x (toward the board).
++fn riser_at(x: f32, y0: f32, y1: f32) -> [WorldTriangle; 2] {
++    [tri([[x, y0, -1.], [x, y1, 1.], [x, y0, 1.]]), tri([[x, y0, -1.], [x, y1, -1.], [x, y1, 1.]])]
++}
++/// Floor at 0 before x = 0 and after x = `width`, a `depth` deep gap
++/// between; returns the world and the far riser's first triangle.
++fn gap(width: f32, depth: f32) -> (Vec<WorldTriangle>, usize) {
++    let mut w: Vec<WorldTriangle> = Vec::new();
++    w.extend(floor(-1., 0., 0.));
++    w.extend(floor(0., width, -depth));
++    w.extend(floor(width, width + 1., 0.));
++    w.extend(riser_at(0., -depth, 0.));
++    let far = w.len();
++    w.extend(riser_at(width, -depth, 0.));
++    (w, far)
++}
++fn gap_contact(triangles: &[WorldTriangle], source: usize, contact: [f32; 3], normal: [f32; 3]) -> bool {
++    let bounds: Vec<Bounds> = triangles.iter().map(|t| Bounds::from_points(t.triangle.vertices).unwrap()).collect();
++    let candidates: Vec<usize> = (0..triangles.len()).collect();
++    let n = Vector3::new(normal[0], normal[1], normal[2]);
++    let len = (n.x * n.x + n.y * n.y + n.z * n.z).sqrt();
++    coplanar_gap_contact(
++        &triangles[source],
++        Vector3::new(contact[0], contact[1], contact[2]),
++        Vector3::new(n.x / len, n.y / len, n.z / len),
++        &candidates,
++        triangles,
++        &bounds,
++    )
++}
++
++#[test]
++fn narrow_crack_and_panel_gap_do_not_snag() {
++    // A 5 cm wide, 4 cm deep crack and a 25 cm wide, 4.5 cm deep panel gap:
++    // the riding surface continues in the same plane beyond both.
++    for (width, depth) in [(0.05, 0.04), (0.25, 0.045)] {
++        let (w, far) = gap(width, depth);
++        assert!(gap_contact(&w, far, [width, -depth * 0.5, 0.], [-1., 0., 0.]), "{width} riser");
++        // The far rim's own edge (the floor's edge, normal tilted up) too.
++        let rim = 4;
++        assert!(gap_contact(&w, rim, [width, 0., 0.2], [-0.9, 0.3, 0.]), "{width} rim");
++        // A vertical push (wheel resting on the rim) is never dropped.
++        assert!(!gap_contact(&w, rim, [width, 0., 0.2], [-0.2, 0.98, 0.]));
++    }
++}
++
++#[test]
++fn curbs_potholes_and_trenches_stay_obstacles() {
++    // A 7.5 cm curb: road at 0, sidewalk at 0.075 beyond x = 0.
++    let mut curb: Vec<WorldTriangle> = Vec::new();
++    curb.extend(floor(-1., 0., 0.));
++    curb.extend(floor(0., 1., 0.075));
++    let r = curb.len();
++    curb.extend(riser_at(0., 0., 0.075));
++    assert!(!gap_contact(&curb, r, [0., 0.04, 0.], [-1., 0., 0.]));
++    // A broad pothole wall (1 m wide, wider than the wheelbase).
++    let (w, far) = gap(1.0, 0.05);
++    assert!(!gap_contact(&w, far, [1.0, -0.025, 0.], [-1., 0., 0.]));
++    // A narrow but deep trench (deeper than the board's clearance).
++    let (w, far) = gap(0.2, 0.3);
++    assert!(!gap_contact(&w, far, [0.2, -0.05, 0.], [-1., 0., 0.]));
++}
++
++// SkateV stacked-sheet rule (plywood piles).
++fn sheet_lip(triangles: &[WorldTriangle], contact: [f32; 3], normal: [f32; 3]) -> bool {
++    let bounds: Vec<Bounds> = triangles.iter().map(|t| Bounds::from_points(t.triangle.vertices).unwrap()).collect();
++    let candidates: Vec<usize> = (0..triangles.len()).collect();
++    let n = Vector3::new(normal[0], normal[1], normal[2]);
++    let len = (n.x * n.x + n.y * n.y + n.z * n.z).sqrt();
++    stacked_sheet_lip(
++        Vector3::new(contact[0], contact[1], contact[2]),
++        Vector3::new(n.x / len, n.y / len, n.z / len),
++        &candidates,
++        triangles,
++        &bounds,
++    )
++}
++
++#[test]
++fn plank_lips_in_a_pile_are_passable_but_a_curb_is_not() {
++    // A 4.7 cm sheet lying on a floor that continues underneath it.
++    let mut pile: Vec<WorldTriangle> = Vec::new();
++    pile.extend(floor(-1., 2., 0.));
++    pile.extend(floor(0., 1., 0.047));
++    pile.extend(riser_at(0., 0., 0.047));
++    assert!(sheet_lip(&pile, [0., 0.02, 0.], [-1., 0., 0.]), "front edge of a sheet on the floor");
++    // A lower sheet's edge tucked under an upper sheet the board rides: the
++    // upper sheet (at 0.094) overhangs the contact on the board's side.
++    let mut tucked = pile.clone();
++    tucked.extend(floor(-0.5, 0.3, 0.094));
++    assert!(sheet_lip(&tucked, [0., 0.047, 0.], [-1., 0., 0.]), "lip under an upper sheet");
++    // A real 7.5 cm curb: the road ends at the curb face.
++    let mut curb: Vec<WorldTriangle> = Vec::new();
++    curb.extend(floor(-1., 0., 0.));
++    curb.extend(floor(0., 1., 0.075));
++    curb.extend(riser_at(0., 0., 0.075));
++    assert!(!sheet_lip(&curb, [0., 0.04, 0.], [-1., 0., 0.]));
++    // A step taller than the board's clearance, even on a continuing floor.
++    let mut tall: Vec<WorldTriangle> = Vec::new();
++    tall.extend(floor(-1., 2., 0.));
++    tall.extend(floor(0., 1., 0.2));
++    tall.extend(riser_at(0., 0., 0.2));
++    assert!(!sheet_lip(&tall, [0., 0.1, 0.], [-1., 0., 0.]));
++}
+--- a/crates/skate-core/src/physics/board_world.rs
++++ b/crates/skate-core/src/physics/board_world.rs
+@@ -11,7 +11,10 @@ use broadphase::{conservative_bounds, primitive_bounds};
+ use query_metadata::{Bounds, QueryMetadata};
+ 
+ use super::{
+-    board::BodyId,
++    board::{
++        BodyId, RETAIL_DECK_MID_LENGTH, RETAIL_TRUCK_Y_POSITION, RETAIL_TRUCK_Z_POSITION_BACK,
++        RETAIL_TRUCK_Z_POSITION_FRONT, RETAIL_WHEEL_RADIUS,
++    },
+     board_runtime::BoardRuntime,
+     board_step::{BoardCollision, CollisionBody},
+     collision::{Sphere, Triangle, WorldContactSettings},
+@@ -425,6 +428,11 @@ impl BoardWorld {
+                             triangles,
+                             triangle_bounds,
+                         );
++                    let gap = imported_floor_seams
++                        && !internal
++                        && (coplanar_gap_contact(entry, pair.b, manifold.normal, &candidates, triangles, triangle_bounds)
++                            || stacked_sheet_lip(pair.b, manifold.normal, &candidates, triangles, triangle_bounds));
++                    let internal = internal || gap;
+                     // SkateV diagnostic (HOST replays only): SKATEV_CONTACT_TRACE=1
+                     // prints non-floor static contacts (2: all) with their source
+                     // triangle; `seam` marks contacts the seam filter dropped.
+@@ -432,7 +440,7 @@ impl BoardWorld {
+                     if level >= 2 || (level == 1 && manifold.normal.y.abs() < 0.9) {
+                         eprintln!(
+                             "CONTACT{} body={:?} tri={index} a=({:.3},{:.3},{:.3}) b=({:.3},{:.3},{:.3}) n=({:.3},{:.3},{:.3}) v=({:.2},{:.2},{:.2}) face=({:.3},{:.3},{:.3})",
+-                            if internal { "-seam" } else { "" },
++                            if gap { "-gap" } else if internal { "-seam" } else { "" },
+                             volume.body, pair.a.x, pair.a.y, pair.a.z, pair.b.x, pair.b.y, pair.b.z,
+                             manifold.normal.x, manifold.normal.y, manifold.normal.z,
+                             volume.linear_velocity.x, volume.linear_velocity.y, volume.linear_velocity.z,
+@@ -605,6 +613,155 @@ fn imported_internal_floor_edge(
+         && floor_at(probe(1.), None, None, candidates, triangles, bounds)
+ }
+ 
++/// SkateV near-coplanar gap rule (owner direction 2026-10-02): a seam, crack
++/// or narrow gap across which the riding surface continues in the same plane
++/// must neither snag nor kick the board; a real curb, ledge or wall must stay
++/// an obstacle. Board scale comes from retail data: the gap must be narrower
++/// than the wheelbase (truck centres, `authored_body_transforms`) and no
++/// deeper than the board's ground clearance under the deck (wheel radius
++/// below the truck, `drive_frames`). A contact pushing the board back
++/// horizontally against the far side of such a gap is dropped; the
++/// continuing surface's own contacts then lift the wheel along that
++/// surface's normal, so the dip and rise remain.
++fn coplanar_gap_contact(
++    source: &WorldTriangle,
++    contact: Vector3,
++    contact_normal: Vector3,
++    candidates: &[usize],
++    triangles: &[WorldTriangle],
++    bounds: &[Bounds],
++) -> bool {
++    let wheelbase = RETAIL_DECK_MID_LENGTH
++        + RETAIL_TRUCK_Z_POSITION_FRONT
++        + RETAIL_TRUCK_Z_POSITION_BACK;
++    let clearance = RETAIL_WHEEL_RADIUS - RETAIL_TRUCK_Y_POSITION;
++    // Only a lateral push is an artifact; vertical response always stays.
++    let lateral = contact_normal.x.hypot(contact_normal.z);
++    if lateral < 0.5 {
++        return false;
++    }
++    let (dx, dz) = (contact_normal.x / lateral, contact_normal.z / lateral);
++    let face = source.triangle.feature.normal;
++    // The far side: the walkable surface just beyond the contact (away from
++    // the board), at or above it and within the clearance.
++    let beyond = (contact.x - dx * 0.03, contact.z - dz * 0.03);
++    let top = source.triangle.vertices.iter().map(|v| v.y).fold(contact.y, f32::max);
++    let far = walkable_surfaces(beyond.0, beyond.1, candidates, triangles, bounds)
++        .filter(|(h, _, _)| *h >= contact.y - 0.01 && *h <= top + 0.02 && *h <= contact.y + clearance)
++        .max_by(|a, b| a.0.total_cmp(&b.0));
++    let Some((far_h, far_n, _)) = far else { return false };
++    if face.y >= IMPORTED_SEAM_MIN_UP && face.x * far_n.x + face.y * far_n.y + face.z * far_n.z < 0.9986 {
++        return false;
++    }
++    let far_point = Vector3::new(beyond.0, far_h, beyond.1);
++    let plane_at = |x: f32, z: f32| far_point.y - (far_n.x * (x - far_point.x) + far_n.z * (z - far_point.z)) / far_n.y;
++    // The near side: the same plane must carry on within a wheelbase, and
++    // the gap between must be no deeper than the clearance.
++    let mut deepest = (plane_at(contact.x, contact.z) - contact.y).max(0.0);
++    let steps = (wheelbase / 0.025).ceil() as usize;
++    for k in 0..=steps {
++        let s = k as f32 * 0.025;
++        let (x, z) = (contact.x + dx * s, contact.z + dz * s);
++        let plane = plane_at(x, z);
++        let mut level = false;
++        for (h, n, _) in walkable_surfaces(x, z, candidates, triangles, bounds) {
++            if h > plane + 0.01 {
++                continue;
++            }
++            if (h - plane).abs() <= 0.01 && n.x * far_n.x + n.y * far_n.y + n.z * far_n.z >= 0.9986 {
++                level = true;
++            } else if plane - h <= clearance + 0.25 {
++                deepest = deepest.max(plane - h);
++            }
++        }
++        if level && s > 0.0 {
++            return deepest <= clearance;
++        }
++    }
++    false
++}
++
++/// SkateV stacked-sheet rule (owner direction 2026-10-02: "make the plank
++/// lips passable"). GTA builds piles of plywood sheets (Del Perro parking
++/// roof kicker, visual and collision identical) as overlapping boxes whose
++/// edges stand proud of the sheet below. A lateral contact is dropped at
++/// the edge of an upper sheet lying on the surface the board rides (that
++/// surface continues underneath the upper sheet, within 1.5 cm and 5
++/// degrees), and at a lower sheet's edge tucked under the sheet the board
++/// rides (a walkable sheet overhangs it on the board's side). Steps are
++/// limited to the board's clearance. A curb or a deck riser has neither a
++/// riding surface underneath its top nor a sheet over its face, so it stays
++/// an obstacle.
++fn stacked_sheet_lip(
++    contact: Vector3,
++    contact_normal: Vector3,
++    candidates: &[usize],
++    triangles: &[WorldTriangle],
++    bounds: &[Bounds],
++) -> bool {
++    let clearance = RETAIL_WHEEL_RADIUS - RETAIL_TRUCK_Y_POSITION;
++    let lateral = contact_normal.x.hypot(contact_normal.z);
++    if lateral < 0.5 {
++        return false;
++    }
++    let (dx, dz) = (contact_normal.x / lateral, contact_normal.z / lateral);
++    let front = (contact.x + dx * 0.03, contact.z + dz * 0.03);
++    // A lower sheet's edge under the sheet the board rides: a walkable sheet
++    // passes over the contact on the board's side, within the clearance.
++    if walkable_surfaces(front.0, front.1, candidates, triangles, bounds)
++        .any(|(h, _, _)| h > contact.y + 0.005 && h <= contact.y + clearance)
++    {
++        return true;
++    }
++    // The surface the board rides, just in front of the edge, at or below it.
++    let Some((near_h, near_n, _)) = walkable_surfaces(front.0, front.1, candidates, triangles, bounds)
++        .filter(|(h, _, _)| *h <= contact.y + 0.01 && *h >= contact.y - clearance)
++        .max_by(|a, b| a.0.total_cmp(&b.0))
++    else {
++        return false;
++    };
++    let near_at = |x: f32, z: f32| near_h - (near_n.x * (x - front.0) + near_n.z * (z - front.1)) / near_n.y;
++    // The upper sheet just beyond the edge, above the riding surface.
++    let beyond = (contact.x - dx * 0.03, contact.z - dz * 0.03);
++    let under = near_at(beyond.0, beyond.1);
++    let surfaces: Vec<_> = walkable_surfaces(beyond.0, beyond.1, candidates, triangles, bounds).collect();
++    let Some(&(_top, _, _)) = surfaces
++        .iter()
++        .filter(|(h, _, _)| *h > under + 0.015 && *h <= under + clearance && *h >= contact.y - 0.01)
++        .min_by(|a, b| a.0.total_cmp(&b.0))
++    else {
++        return false;
++    };
++    // The riding surface carries on underneath the upper sheet.
++    surfaces.iter().any(|(h, n, _)| {
++        (h - under).abs() <= 0.015 && n.x * near_n.x + n.y * near_n.y + n.z * near_n.z >= 0.9962
++    })
++}
++
++/// Walkable faces over (x, z): height there, normal, index.
++fn walkable_surfaces<'a>(
++    x: f32,
++    z: f32,
++    candidates: &'a [usize],
++    triangles: &'a [WorldTriangle],
++    bounds: &'a [Bounds],
++) -> impl Iterator<Item = (f32, Vector3, usize)> + 'a {
++    candidates.iter().filter_map(move |&i| {
++        let other = &triangles[i];
++        let n = other.triangle.feature.normal;
++        if n.y < IMPORTED_SEAM_MIN_UP {
++            return None;
++        }
++        let b = bounds[i];
++        if x < b.min.x - 0.001 || x > b.max.x + 0.001 || z < b.min.z - 0.001 || z > b.max.z + 0.001 {
++            return None;
++        }
++        let p = other.triangle.vertices;
++        let h = p[0].y - (n.x * (x - p[0].x) + n.z * (z - p[0].z)) / n.y;
++        point_in_floor_triangle(Vector3::new(x, h, z), p).then_some((h, n, i))
++    })
++}
++
+ /// A walkable face passes over `point` at or above it (1 cm tolerance).
+ fn walkable_above(point: Vector3, candidates: &[usize], triangles: &[WorldTriangle], bounds: &[Bounds]) -> bool {
+     candidates.iter().any(|&i| {

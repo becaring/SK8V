@@ -1,0 +1,33 @@
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index fa2a6f9..75a2f09 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -6,6 +6,7 @@ use skate_data::skate_map::{Collision, Geometry, Rail, SkateMap};
+ use std::path::Path;
+ pub mod air;
+ pub mod bail;
++pub mod skitch;
+ pub mod hom;
+ pub mod hud;
+ pub use super::host_bodies::{CHARACTER_GROUP, HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+diff --git a/crates/skate-host/src/physics/bridge/skitch.rs b/crates/skate-host/src/physics/bridge/skitch.rs
+new file mode 100644
+index 0000000..cefed66
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/skitch.rs
+@@ -0,0 +1,15 @@
++//! SkateV skitching (overlay patch 0032): which host vehicle the rider holds,
++//! so the host can leave that vehicle to GTA (Skate's reaction impulses on the
++//! towing vehicle are not applied, and neither are contact pushes on it).
++use super::Session;
++use skate_core::player::state::PhysicalStateId;
++
++impl Session {
++    /// The grab-line tag (the vehicle's dynamic tag) of the vehicle being
++    /// skitched, while the rider is in the Skitching state.
++    pub fn skitch_held_tag(&self) -> Option<u32> {
++        matches!(self.skater.player_state.current(), PhysicalStateId::Skitching)
++            .then_some(self.skater.skitch.skitch.id_1316)
++            .filter(|tag| *tag != 0)
++    }
++}

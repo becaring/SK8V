@@ -1,0 +1,23 @@
+[package]
+name = "skatev-runtime"
+version = "0.2.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "SkateVRuntime"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Pinned mashup Skate host + project patches, materialised by
+# tools/prepare-skate-overlay.ps1 (upstream/ itself is never edited).
+skate-host = { path = "../../build/overlay/skate/crates/skate-host" }
+skate-core = { path = "../../build/overlay/skate/crates/skate-core" }
+bevy_math = "0.19"
+svwc = { path = "../svwc" }
+# Original Skate 3 HUD (donor HUD runtime compiled in place; see skate-hud).
+skate-hud = { path = "../skate-hud" }
+serde_json = "1"
+png = "0.17"
+# Skate 3 AEMS audio port (docs/AEMS.md); the live engine renders dry voices.
+skate-aems = { path = "../skate-aems" }

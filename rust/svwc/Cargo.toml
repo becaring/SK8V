@@ -1,0 +1,8 @@
+[package]
+name = "svwc"
+version = "0.3.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+zstd = "0.13"

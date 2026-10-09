@@ -1,0 +1,18 @@
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -339,6 +339,15 @@ pub struct CollisionBuilder {
+ pub const NO_GRIND_TAG: u32 = 1 << 30;
+ 
+ impl CollisionBuilder {
++    /// SkateV: the builder without a session. It needs only Skate's floor
++    /// contact material (physics data), so a host can build the player's
++    /// first working set while the session itself is still loading.
++    pub fn load(root: &Path) -> Result<Self, String> {
++        let data = skate_data::collections::Collections::load(root)?;
++        Ok(Self {
++            material: super::settings::PhysicsSettings::load(&data)?.floor_material,
++        })
++    }
+     pub fn build(
+         &self,
+         triangles: Vec<[[f32; 3]; 3]>,

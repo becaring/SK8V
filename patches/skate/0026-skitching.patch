@@ -1,0 +1,2892 @@
+--- a/crates/skate-core/src/physics/board_world/dynamic_queries.rs
++++ b/crates/skate-core/src/physics/board_world/dynamic_queries.rs
+@@ -55,6 +55,14 @@
+         else { &self.dynamic[index - self.triangles.len()] }
+     }
+ 
++    /// SkateV: host entity of a dynamic-segment triangle index (None for the
++    /// static world or an untagged triangle).
++    pub fn query_entity(&self, index: usize) -> Option<u32> {
++        index.checked_sub(self.triangles.len())
++            .and_then(|i| self.dynamic_entities.get(i).copied())
++            .filter(|&entity| entity != 0)
++    }
++
+     /// Ranges come from scene_mesh_candidates and never span both segments.
+     pub fn query_triangles(&self, range: Range<usize>) -> &[WorldTriangle] {
+         if range.start < self.triangles.len() { &self.triangles[range] }
+--- a/crates/skate-core/src/physics/skeleton_board_offset.rs
++++ b/crates/skate-core/src/physics/skeleton_board_offset.rs
+@@ -35,6 +35,14 @@
+         self.height_frames = 15.0;
+         self.orientation_refreshed = true;
+         self.height_refreshed = true;
++    }
++
++    ///Skitch lean82D4A0C0 writes the frame and the orientation channel only
++    ///(Skeleton16389=1, 16392=15); the height channel is untouched.
++    pub fn refresh_orientation(&mut self, transform: AnimationPartTransform) {
++        self.transform = transform;
++        self.orientation_frames = 15.0;
++        self.orientation_refreshed = true;
+     }
+ 
+     /// LandingAdjust writes only Y and its own duration, preserving X/Z/basis.
+--- a/crates/skate-core/src/player/input_phase/pose_output.rs
++++ b/crates/skate-core/src/player/input_phase/pose_output.rs
+@@ -77,6 +77,10 @@
+ 
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ pub struct AnimationOutputFields {
++    ///Skitch Fill82D4C078: hand height988, hand speed912*60, IK flags984.
++    pub scalar_132: f32,
++    pub scalar_136: f32,
++    pub word_140: u32,
+     pub collision_time_144: f32,
+     pub profile_148: u32,
+     pub tricks_blocked_on_stairs_166: u8,
+@@ -86,7 +90,8 @@
+ impl Default for AnimationOutputFields {
+     fn default() -> Self {
+         // Animation82DE3F38 stores FLT_MAX at144 and zero at148.
+-        Self { collision_time_144: f32::MAX, profile_148: 0, tricks_blocked_on_stairs_166: 0, manual_opposition_168: 0 }
++        Self { scalar_132: 0.0, scalar_136: 0.0, word_140: 0, collision_time_144: f32::MAX, profile_148: 0,
++            tricks_blocked_on_stairs_166: 0, manual_opposition_168: 0 }
+     }
+ }
+ 
+--- a/crates/skate-core/src/player/input_phase/types.rs
++++ b/crates/skate-core/src/player/input_phase/types.rs
+@@ -42,6 +42,8 @@
+     ///BipedGround Fill82D32D38, independent of State40.
+     pub counter_36: u32,
+     pub skitch_value_40: u32,
++    ///Skitch Fill82D4C078: 1345 bit3 (vehicle brake latch).
++    pub flag_53: u8,
+     pub flag_61: u8,
+     pub flag_66: u8,
+     pub flag_69: u8,
+@@ -88,8 +90,14 @@
+     pub vector_96: RawVector,
+     pub vector_128: RawVector,
+     pub scalar_276: f32,
++    ///Ground/Skitch spline height (Ground2668, Skitch hand point y).
++    pub scalar_280: f32,
++    ///Skitch Fill82D4C078: absorb956, normalized along936, release996.
++    pub scalar_284: f32,
++    pub scalar_288: f32,
+     pub scalar_292: f32,
+     pub scalar_296: f32,
++    pub scalar_308: f32,
+     pub flag_317: u8,
+     pub flag_318: u8,
+ }
+--- a/crates/skate-core/src/player/mod.rs
++++ b/crates/skate-core/src/player/mod.rs
+@@ -23,3 +23,4 @@
+ pub mod conditioner_capabilities;
+ pub mod teleport_state;
+ pub mod respawn;
++pub mod skitch;
+--- a/crates/skate-core/src/player/offboard/contact_toolkit.rs
++++ b/crates/skate-core/src/player/offboard/contact_toolkit.rs
+@@ -1,7 +1,7 @@
+ //! OffboardGroundAnalyzer query ownership (TU3 82D81068/82D811C8).
+ //!
+ //! Submitted queries become visible only through the ordered analyzer refresh.
+-mod analyzer_math;
++pub mod analyzer_math;
+ mod candidate;
+ mod classification;
+ mod collection;
+--- a/crates/skate-core/src/player/offboard/contact_toolkit/analyzer_math.rs
++++ b/crates/skate-core/src/player/offboard/contact_toolkit/analyzer_math.rs
+@@ -54,7 +54,7 @@
+     }
+     (1. / denominator) * (v[0] * (a[1] - c[1]) - v[1] * (a[0] - c[0]))
+ }
+-pub(super) fn tangent(x: f32) -> f32 {
++pub fn tangent(x: f32) -> f32 {
+     if x == 0. {
+         return 0.;
+     }
+--- a/crates/skate-core/src/player/offboard/grab_scene/query.rs
++++ b/crates/skate-core/src/player/offboard/grab_scene/query.rs
+@@ -1,7 +1,8 @@
+ use super::{math::*,Provider,Query,Record,Registry,qualify,closest_point};
+-///82760508 mode4, actual provider enumeration, cap32 BEFORE distance sort.
++///82760508: mode bit 2 runs the vehicle provider (mgr+4088) and bit 4 the
++///Dmo/LW object providers (mgr+4084), sharing cap32 BEFORE distance sort.
+ pub fn query(registry:&Registry,q:&Query)->Result<Vec<Record>,&'static str> {
+-    if q.mode!=4 {return Err("This offboard provider implements native bounded mode4 only");}
++    if q.mode&6==0 {return Err("This offboard provider implements native query modes2/4 only");}
+     if q.capacity>32 {return Err("Native grab query buffer capacity is32");}
+     if q.position.iter().chain(q.sort_position.iter()).chain(q.bounds.extents.iter())
+         .chain(q.bounds.frame.iter().flatten()).any(|v|!v.is_finite()) {
+@@ -9,6 +10,8 @@
+     }
+     let radius=length(q.bounds.extents);let center=q.bounds.frame[3];
+     let mut out=Vec::with_capacity(32);
++    if q.mode&2!=0 {vehicles(registry,q,radius,center,&mut out)?;}
++    if q.mode&4==0 {return Ok(sort(out,q));}
+     for object in &registry.objects {
+         if object.disabled || !object.assembly_ready || object.assembly.is_none() {continue;}
+         match object.provider {
+@@ -21,6 +24,7 @@
+                 let d=sub(object.frame[3],center);let limit=radius+15.0;
+                 if dot(d,d)>=limit*limit {continue;}
+             }
++            Provider::Vehicle=>continue,
+         }
+         for spline in &object.splines {
+             if spline.descriptor.kind!=2 || spline.geometry.points.len()<2
+@@ -35,6 +39,32 @@
+             if qualify(&record,q.position,q.bounds,q.limits) {out.push(record);}
+         }
+     }
++    Ok(sort(out,q))
++}
++///82C35B98: radius+15 object gate, then each part's first-to-last chord must
++///be non-degenerate and touch the query sphere before record and qualify.
++fn vehicles(registry:&Registry,q:&Query,radius:f32,center:super::Vector,out:&mut Vec<Record>)
++    ->Result<(),&'static str> {
++    for object in &registry.objects {
++        if !matches!(object.provider,Provider::Vehicle) || !object.assembly_ready
++            || object.assembly.is_none() {continue;}
++        let d=sub(object.frame[3],center);let limit=radius+15.0;
++        if dot(d,d)>=limit*limit {continue;}
++        for spline in &object.splines {
++            let points=&spline.geometry.points;
++            if points.len()<2 {continue;}
++            let (first,last)=(points[0],points[points.len()-1]);
++            let delta=sub(last,first);
++            if !(dot(delta,delta)>f32::from_bits(0x3727c5ac))
++                || !sphere_segment(center,radius,point(object.frame,first),point(object.frame,last))
++                || out.len()>=32 {continue;}
++            let record=object.record(spline)?;
++            if qualify(&record,q.position,q.bounds,q.limits) {out.push(record);}
++        }
++    }
++    Ok(())
++}
++fn sort(mut out:Vec<Record>,q:&Query)->Vec<Record> {
+     //82761C58 stores squared closest-segment distance at184. Since count<=32,
+     //82762178 always dispatches stable insertion sort827629D8 (strict shifts).
+     for r in &mut out {
+@@ -44,5 +74,5 @@
+     for i in 1..out.len() {let mut j=i;while j>0 && out[j].scalar(184)<out[j-1].scalar(184) {
+         out.swap(j,j-1);j-=1;
+     }}
+-    out.truncate(q.capacity);Ok(out)
++    out.truncate(q.capacity);out
+ }
+--- a/crates/skate-core/src/player/offboard/grab_scene/registry.rs
++++ b/crates/skate-core/src/player/offboard/grab_scene/registry.rs
+@@ -9,6 +9,9 @@
+     Dmo { selection_variant:u8,matching_group:i32,record_enabled:bool },
+     ///82C4BE80: actual dynamic-object provider, no actor matching gate.
+     LivingWorld,
++    ///82C35B98: LivingWorld vehicle sub-manager (query mode bit 2). Records
++    ///are descriptor kind 1; no spline-kind or approach-vector filter.
++    Vehicle,
+ }
+ #[derive(Clone,Debug)]
+ pub struct Spline { pub descriptor:Descriptor,pub geometry:Arc<Geometry>,pub word_272:u32 }
+--- a/crates/skate-core/src/player/offboard/ground_sync.rs
++++ b/crates/skate-core/src/player/offboard/ground_sync.rs
+@@ -112,6 +112,17 @@
+     Bounds { frame: [right, up, forward, position], extents }
+ }
+ 
++///82D2E250 with arg7=1 (Skitch detection82D39BB8): right is row0 flattened
++///(fallback 82139A10 = +x), forward is row2 unmodified, up = forward x right.
++pub fn skitch_bounds(frame: Frame, offset: Vector, extents: Vector) -> Bounds {
++    let mut right = frame[0]; right[1] = 0.0;
++    let right = normalize_or(right, [1.0,0.0,0.0,0.0]);
++    let forward = frame[2];
++    let up = cross(forward, right);
++    let position = madd(up, offset[1], madd(forward, offset[2]+extents[2], frame[3]));
++    Bounds { frame: [right, up, forward, position], extents }
++}
++
+ ///82D324B0. The caller clears144; a failed probe deliberately preserves that byte.
+ pub fn update_board<S: Services>(state: &mut State, services: &mut S) {
+     let settings = services.board_settings();
+diff --git a/crates/skate-core/src/player/skitch.rs b/crates/skate-core/src/player/skitch.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/skate-core/src/player/skitch.rs
+@@ -0,0 +1,976 @@
++//! Skitching state 104 (TU3 vtable 82327398): the skater holds a moving
++//! object's grab spline. This owns the native Skitch state fields and the
++//! pure calculations of Update82D477C0; the host supplies observations and
++//! performs board forces, IK writes and record requests.
++mod math;
++#[cfg(test)]
++mod tests;
++use crate::player::offboard::grab_scene::{Descriptor, Record};
++use crate::point_graph::PointGraph;
++use math::*;
++
++pub type V = [f32; 4];
++pub type Frame = [V; 4];
++const IDENTITY: Frame = [
++    [1.0, 0.0, 0.0, 0.0],
++    [0.0, 1.0, 0.0, 0.0],
++    [0.0, 0.0, 1.0, 0.0],
++    [0.0, 0.0, 0.0, 0.0],
++];
++
++///physics_state_skitching/default, by the hashes the native code reads.
++#[derive(Clone, Debug)]
++pub struct Settings {
++    pub enter_delay_cc25: f32,
++    pub reach_margin_6027: f32,
++    pub moving_speed_1f85: f32,
++    pub speed_filter_1ea5: f32,
++    pub fast_speed_30da: f32,
++    pub excess_speed_466f: PointGraph<8>,
++    pub speed_limit_7fa1: PointGraph<8>,
++    pub stick_force_e496: f32,
++    pub relative_bias_6c62: f32,
++    pub reach_delay_81a1: f32,
++    pub overrun_time_08fe: f32,
++    pub reach_cancel_d60a: f32,
++    pub reach_cooldown_44ee: f32,
++    pub reach_release_ba19: f32,
++    pub reach_exit_f5f9: f32,
++    pub reach_extra_aed1: f32,
++    pub overrun_speed_007c: f32,
++    pub settle_speed_1f5f: f32,
++    pub settle_distance_4cc8: f32,
++    pub chase_distance_8fef: f32,
++    pub chase_time_cfbb: f32,
++    pub hand_gain_ff6b: f32,
++    pub hand_step_ea88: f32,
++    pub release_left_low_e2dc: f32,
++    pub release_right_low_c6c3: f32,
++    pub release_left_high_11b7: f32,
++    pub release_right_high_c505: f32,
++    pub arm_reach_eff7: f32,
++    pub arm_radius_2c75: f32,
++    pub grab_offset_858d: V,
++    pub pull_graph_00a1: PointGraph<8>,
++    pub pull_bias_b7a8: f32,
++    pub pull_bias_reach_95d9: f32,
++    pub pull_damping_71a8: f32,
++    pub turn_rate_0b19: f32,
++    pub turn_time_3f79: PointGraph<8>,
++    pub heading_adjust_vs_speed: PointGraph<8>,
++    pub turn_settle_1ff7: PointGraph<8>,
++    pub lean_30fd: PointGraph<8>,
++    pub exit_cooldown_6595: f32,
++    pub release_inner_58b6: f32,
++    pub release_outer_8524: f32,
++    pub wheel_gap_40aa: f32,
++    pub wheel_gap_short_f178: f32,
++    pub airborne_time_03a5: f32,
++    ///Ground detection82D39BB8/82D39D98.
++    pub detect_extents_978b: V,
++    pub detect_offset_8e3c: V,
++    pub detect_distance_bf43: f32,
++    pub detect_time_424a: f32,
++}
++
++///Per-update observations (ProcessedPhysIn and board body).
++#[derive(Clone, Copy, Debug)]
++pub struct Observations {
++    ///Processed+128 and +160: effective transform row0/row2.
++    pub effective_x: V,
++    pub effective_z: V,
++    ///Processed+176 effective board position.
++    pub board: V,
++    ///Processed+464 ground normal.
++    pub normal: V,
++    ///Processed+2676 turn and +2672 spin.
++    pub turn: f32,
++    pub spin: f32,
++    ///Body856 wheel-line minimum distance and Body7692 time without contact.
++    pub wheel_gap: f32,
++    pub airborne_time: f32,
++}
++
++///Hand IK inputs82D4A378: raw animation globals (positions) of parts
++///3/7 (hands) and 5/9 (arms), animation-to-world, and world grab y/z.
++#[derive(Clone, Copy, Debug)]
++pub struct HandPose {
++    pub hands: [V; 2],
++    pub arms: [V; 2],
++    pub animation_to_world: Frame,
++    pub world_grab_y: f32,
++    pub world_grab_z: f32,
++    pub mirrored: bool,
++}
++///82BD9728/82BD97D0 FootIk external target for limb 2+i.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct HandTarget {
++    pub world_position: V,
++    pub blend: f32,
++}
++
++///Native state fields; names carry the TU3 offsets.
++#[derive(Clone, Debug)]
++pub struct Skitch {
++    ///S.64/128/192: line frames two updates ago, previous and current.
++    pub frames: [Frame; 3],
++    pub relative_256: Frame,
++    pub relative_320: Frame,
++    pub relative_384: Frame,
++    pub relative_448: Frame,
++    pub grab_frame_528: Frame,
++    pub board_592: V,
++    pub grab_offset_608: V,
++    pub grab_direction_624: V,
++    pub projection_640: V,
++    pub lateral_direction_656: V,
++    pub line_offset_672: V,
++    pub line_lateral_688: V,
++    ///704 right (part9 side), 720 left.
++    pub hand_points_704_720: [V; 2],
++    pub target_736: V,
++    pub line_velocity_752: V,
++    pub lateral_velocity_768: V,
++    pub pull_direction_784: V,
++    pub normal_800: V,
++    pub pull_force_816: V,
++    pub speed_832: f32,
++    pub along_836: f32,
++    pub along_velocity_840: f32,
++    pub relative_velocity_844: f32,
++    pub line_lateral_848: f32,
++    pub lateral_852: f32,
++    pub lateral_velocity_856: f32,
++    pub grab_distance_860: f32,
++    pub target_864: f32,
++    pub line_speed_868: f32,
++    ///876 stick, 880 excess, 884 spring, 888 sum, 892 velocity, 896 step.
++    pub dynamics_876_896: [f32; 6],
++    pub latched_900: f32,
++    pub hand_target_904: f32,
++    pub hand_908: f32,
++    pub hand_step_912: f32,
++    pub arm_distances_916_920: [f32; 2],
++    pub stick_924: f32,
++    pub half_length_928: f32,
++    pub limit_932: f32,
++    pub normalized_936: f32,
++    pub angle_940: f32,
++    pub lean_944: f32,
++    pub phase_timer_948: f32,
++    pub pull_angle_952: f32,
++    pub absorb_956: f32,
++    pub overrun_timer_960: f32,
++    pub idle_timer_964: f32,
++    pub hand_blends_968_972: [f32; 2],
++    pub hand_blend_targets_976_980: [f32; 2],
++    pub hand_flags_984: u32,
++    pub hand_height_988: f32,
++    pub time_992: f32,
++    pub release_speed_996: f32,
++    pub fast_1000: i32,
++    pub flag_1004: i32,
++    pub exit_cooldown_1016: f32,
++    pub timer_1020: f32,
++    ///S+1024 copy of the published grab record (ProcessedPhysIn+1888).
++    pub record_1024: Option<Record>,
++    pub kind_1312: u32,
++    pub id_1316: u32,
++    pub release_counter_1320: i32,
++    pub phase_1324: i32,
++    ///1328 left, 1332 right hand released.
++    pub released_1328_1332: [i32; 2],
++    pub last_released_1336_1340: [i32; 2],
++    pub flags_1344: u8,
++    pub flags_1345: u8,
++}
++impl Default for Skitch {
++    fn default() -> Self {
++        Self {
++            frames: [IDENTITY; 3],
++            relative_256: IDENTITY,
++            relative_320: IDENTITY,
++            relative_384: IDENTITY,
++            relative_448: IDENTITY,
++            grab_frame_528: IDENTITY,
++            board_592: [0.0; 4],
++            grab_offset_608: [0.0; 4],
++            grab_direction_624: [0.0; 4],
++            projection_640: [0.0; 4],
++            lateral_direction_656: [0.0; 4],
++            line_offset_672: [0.0; 4],
++            line_lateral_688: [0.0; 4],
++            hand_points_704_720: [[0.0; 4]; 2],
++            target_736: [0.0; 4],
++            line_velocity_752: [0.0; 4],
++            lateral_velocity_768: [0.0; 4],
++            pull_direction_784: [0.0; 4],
++            normal_800: [0.0; 4],
++            pull_force_816: [0.0; 4],
++            speed_832: 0.0,
++            along_836: 0.0,
++            along_velocity_840: 0.0,
++            relative_velocity_844: 0.0,
++            line_lateral_848: 0.0,
++            lateral_852: 0.0,
++            lateral_velocity_856: 0.0,
++            grab_distance_860: 0.0,
++            target_864: 0.0,
++            line_speed_868: 0.0,
++            dynamics_876_896: [0.0; 6],
++            latched_900: 0.0,
++            hand_target_904: 0.0,
++            hand_908: 0.0,
++            hand_step_912: 0.0,
++            arm_distances_916_920: [0.0; 2],
++            stick_924: 0.0,
++            half_length_928: 0.0,
++            limit_932: 0.0,
++            normalized_936: 0.0,
++            angle_940: 0.0,
++            lean_944: 0.0,
++            phase_timer_948: 0.0,
++            pull_angle_952: 0.0,
++            absorb_956: 0.0,
++            overrun_timer_960: 0.0,
++            idle_timer_964: 0.0,
++            hand_blends_968_972: [0.0; 2],
++            hand_blend_targets_976_980: [0.0; 2],
++            hand_flags_984: 0,
++            hand_height_988: 0.0,
++            time_992: 0.0,
++            release_speed_996: 0.0,
++            fast_1000: 0,
++            flag_1004: 0,
++            exit_cooldown_1016: 0.0,
++            timer_1020: 0.0,
++            record_1024: None,
++            kind_1312: 0,
++            id_1316: 0,
++            release_counter_1320: 0,
++            phase_1324: 0,
++            released_1328_1332: [1; 2],
++            last_released_1336_1340: [1; 2],
++            flags_1344: 0,
++            flags_1345: 0,
++        }
++    }
++}
++
++///Output block of Fill82D4C078 (other than the off-board latch).
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub struct Fill {
++    ///Off-board +304 latch: held and not exiting.
++    pub grabbing_304: bool,
++    pub animation_132: f32,
++    pub animation_136: f32,
++    pub animation_140: u32,
++    pub ground_280: f32,
++    pub ground_284: f32,
++    pub ground_288: f32,
++    pub ground_292: f32,
++    pub ground_308: f32,
++    pub state_36: u32,
++    pub state_40: u32,
++    pub state_53: bool,
++}
++
++impl Skitch {
++    ///Init82D47318.
++    pub fn init(&mut self, s: &Settings) {
++        let flags_1344 = self.flags_1344 & 0x04;
++        let flags_1345 = (self.flags_1345 & 0x87) | 0x80;
++        let record = self.record_1024.take();
++        let (kind, id) = (self.kind_1312, self.id_1316);
++        *self = Self::default();
++        self.record_1024 = record;
++        self.kind_1312 = kind;
++        self.id_1316 = id;
++        self.flags_1344 = flags_1344;
++        self.flags_1345 = flags_1345;
++        self.timer_1020 = s.enter_delay_cc25;
++    }
++    ///Enter82D47278 (board animation disable is the host's).
++    pub fn enter(&mut self, s: &Settings, record: Record) {
++        self.init(s);
++        let descriptor = record.descriptor();
++        self.record_1024 = Some(record);
++        self.flags_1344 &= !0x10;
++        self.kind_1312 = descriptor.kind;
++        self.id_1316 = descriptor.id;
++    }
++    pub fn held(&self) -> bool {
++        self.flags_1344 & 0x80 != 0
++    }
++    pub fn phase(&self) -> i32 {
++        self.phase_1324
++    }
++    ///Update82D477C0 first step: 1344 bit7 = ProcessedPhysIn+2480 bit22.
++    pub fn begin(&mut self, record_ready: bool) {
++        self.flags_1344 = (self.flags_1344 & 0x7f) | if record_ready { 0x80 } else { 0 };
++    }
++    ///Descriptor re-requested at the end of a held update (S.1212/1216).
++    pub fn request(&self) -> Option<Descriptor> {
++        self.record_1024.as_ref().map(Record::descriptor)
++    }
++
++    ///The held part of Update82D477C0 through 82D49AB8: record copy, wheel
++    ///gap82D47FC0, stick, normal, line frame, phase, dynamics, per-phase.
++    pub fn track(&mut self, s: &Settings, record: Record, o: &Observations) {
++        self.record_1024 = Some(record);
++        let airborne = o.wheel_gap > s.wheel_gap_40aa
++            || (o.wheel_gap > s.wheel_gap_short_f178 && o.airborne_time > s.airborne_time_03a5);
++        self.set_1345(0x20, airborne);
++        self.stick_924 = o.turn;
++        let opposed = o.turn != 0.0 && o.spin != 0.0 && (o.turn > 0.0) != (o.spin > 0.0);
++        if !opposed {
++            let side = if o.turn > 0.0 { 1.0 } else { -1.0 };
++            let a = side * o.turn;
++            let b = side * o.spin;
++            self.stick_924 = if a - b >= 0.0 { a } else { b } * side;
++        }
++        self.normal_800 = o.normal;
++        self.line_frame(s, o);
++        self.update_phase(s);
++        self.dynamics(s, o);
++        self.phase_targets(s);
++    }
++
++    fn set_1345(&mut self, bit: u8, value: bool) {
++        self.flags_1345 = (self.flags_1345 & !bit) | if value { bit } else { 0 };
++    }
++    fn record(&self) -> &Record {
++        self.record_1024.as_ref().expect("Skitch tracking requires its copied record")
++    }
++
++    ///82D48148: line frame history, along/lateral measurements, grab offset.
++    fn line_frame(&mut self, s: &Settings, o: &Observations) {
++        let record = self.record_1024.as_mut().expect("Skitch line requires its record");
++        if dot(o.effective_x, record.vector(112)) < 0.0 {
++            let [a, b] = record.endpoints();
++            record.set_vector(64, b);
++            record.set_vector(80, a);
++            record.set_vector(112, scale(record.vector(112), -1.0));
++            record.0[50] ^= 0x2000_0000; //byte200 bit5.
++        }
++        self.half_length_928 = record.scalar(180);
++        self.limit_932 = self.half_length_928 + s.reach_margin_6027;
++        let [a, b] = record.endpoints();
++        let direction = record.vector(112);
++        let n = self.normal_800;
++        self.frames[0] = self.frames[1];
++        self.frames[1] = self.frames[2];
++        let side = cross(direction, n);
++        let side_length = length(side);
++        let side = if side_length > f32::from_bits(0x358637bd) {
++            scale(side, side_length.recip())
++        } else {
++            [0.0; 4]
++        };
++        self.frames[2] = [direction, n, side, scale(add(a, b), 0.5)];
++        if self.flags_1345 & 0x80 != 0 {
++            self.frames[0] = self.frames[2];
++            self.frames[1] = self.frames[2];
++        }
++        self.relative_256 = relative(&self.frames[1], &self.frames[2]);
++        self.relative_320 = relative(&self.frames[2], &self.frames[1]);
++        self.relative_384 = relative(&self.frames[2], &self.frames[2]);
++        self.relative_448 = self.relative_256;
++        self.board_592 = o.board;
++        let previous = self.frames[1];
++        let along = dot(previous[0], sub(o.board, previous[3]));
++        self.along_velocity_840 = (along - self.along_836) * RATE;
++        self.along_836 = along;
++        let projection = line_point(&previous, along);
++        self.projection_640 = sub(projection, o.board);
++        let line = if self.along_836.abs() < self.half_length_928 {
++            point(&self.relative_320, at_distance(self.record(), self.along_836))
++        } else {
++            projection
++        };
++        self.line_offset_672 = sub(line, projection);
++        self.relative_velocity_844 = self.along_velocity_840 - self.dynamics_876_896[4];
++        self.line_velocity_752 = scale(
++            sub(
++                line_point(&self.frames[1], self.along_836),
++                line_point(&self.frames[0], self.along_836),
++            ),
++            reciprocal(STEP),
++        );
++        let lateral = reject(self.projection_640, n);
++        self.lateral_direction_656 = normalize(lateral);
++        let offset = reject(self.line_offset_672, n);
++        self.line_lateral_848 = length(offset);
++        if dot(offset, self.frames[1][2]) < 0.0 {
++            self.line_lateral_848 = -self.line_lateral_848;
++        }
++        self.line_lateral_688 = scale(offset, reciprocal(self.line_lateral_848));
++        let lateral = length(lateral);
++        self.lateral_velocity_856 = (lateral - self.lateral_852) * RATE;
++        self.lateral_852 = lateral;
++        self.lateral_velocity_768 = scale(
++            self.lateral_direction_656,
++            dot(self.line_velocity_752, self.lateral_direction_656),
++        );
++        self.speed_832 = length(self.lateral_velocity_768);
++        if self.flags_1345 & 0x80 != 0 {
++            self.lateral_velocity_856 = 0.0;
++        }
++        let mut grab = self.frames[1];
++        grab[3] = madd(grab[2], 0.5, grab[3]);
++        self.grab_frame_528 = grab;
++        self.grab_offset_608 = sub(line_point(&grab, self.along_836), o.board);
++        let offset = reject(self.grab_offset_608, n);
++        self.grab_direction_624 = normalize(offset);
++        self.grab_distance_860 = length(offset);
++        self.set_1345(0x40, self.speed_832 >= s.moving_speed_1f85);
++    }
++
++    ///82D4C180: stick pushes back toward the middle of the line.
++    fn inward(&self) -> bool {
++        self.stick_924.abs() > 0.01 && (self.stick_924 > 0.0) == (self.along_836 < 0.0)
++    }
++    ///82D4C1F0: stick pushes past the end the skater is on.
++    fn outward(&self) -> bool {
++        self.stick_924.abs() > 0.5 && (self.stick_924 > 0.0) == (self.along_836 > 0.0)
++    }
++    ///82D471A8: just past an end, within the reach margin.
++    fn overhanging(&self, s: &Settings) -> bool {
++        self.along_836.abs() > self.half_length_928
++            && self.along_836.abs() <= self.half_length_928 + s.reach_margin_6027
++    }
++    fn inside(&self) -> bool {
++        self.along_836.abs() <= self.half_length_928
++    }
++
++    ///82D49580 phase machine.
++    fn update_phase(&mut self, s: &Settings) {
++        match self.phase_1324 {
++            0 => {
++                self.flags_1344 &= !0x60;
++                if !(self.phase_timer_948 > s.enter_delay_cc25
++                    || self.released_1328_1332[0] == 0
++                    || self.released_1328_1332[1] == 0)
++                {
++                    return;
++                }
++                self.hand_908 = self.along_836;
++                self.target_864 = self.along_836;
++                self.phase_timer_948 = 0.0;
++                self.phase_1324 = if self.inside() { 1 } else { 2 };
++                self.flags_1344 |= 8;
++            }
++            1 => {
++                self.flags_1344 = (self.flags_1344 & !0x60) | 0x40;
++                if self.inside() || self.inward() {
++                    return;
++                }
++                self.phase_1324 = 2;
++                self.flags_1344 |= 8;
++                self.phase_timer_948 = 0.0;
++            }
++            2 => {
++                self.flags_1344 = (self.flags_1344 & !0x60) | 0x20;
++                if self.phase_timer_948 <= s.reach_delay_81a1 {
++                    return;
++                }
++                let against = self.fast_1000 != 0
++                    && self.along_836 != 0.0
++                    && (self.fast_1000 > 0) != (self.along_836 > 0.0);
++                if self.overhanging(s) && self.outward() && !against {
++                    self.phase_1324 = 3;
++                    self.flags_1344 |= 8;
++                    self.phase_timer_948 = 0.0;
++                } else if self.inside() || self.inward() {
++                    self.phase_1324 = 1;
++                    self.flags_1344 |= 8;
++                    self.phase_timer_948 = 0.0;
++                } else if self.overrun_timer_960 > s.overrun_time_08fe {
++                    self.flags_1344 = (self.flags_1344 & 0x97) | 8;
++                    self.phase_1324 = 4;
++                    self.phase_timer_948 = 0.0;
++                }
++                if self.phase_1324 != 2 {
++                    self.overrun_timer_960 = 0.0;
++                    self.flags_1344 &= !3;
++                }
++            }
++            3 => {
++                self.flags_1344 = (self.flags_1344 & !0x60) | 0x20;
++                if self.phase_timer_948 < s.reach_cancel_d60a && !self.outward() {
++                    self.phase_1324 = 2;
++                    self.flags_1344 |= 8;
++                    self.phase_timer_948 = 0.0;
++                    self.timer_1020 = s.reach_cooldown_44ee;
++                }
++                if self.phase_1324 != 3 {
++                    self.flags_1344 &= !3;
++                }
++                if self.phase_timer_948 > s.reach_release_ba19 {
++                    self.exit_cooldown_1016 = s.reach_exit_f5f9;
++                    self.phase_1324 = 4;
++                }
++            }
++            _ => {}
++        }
++    }
++
++    ///82D4BC58: wrapped angle from the effective forward to the grab direction.
++    fn grab_angle(&self, o: &Observations) -> f32 {
++        wrap(signed_angle(o.effective_z, self.grab_direction_624, self.normal_800))
++    }
++
++    ///82D48C98 along-line dynamics: target, filtered line speed, stick and
++    ///spring forces, clamped velocity and integration of the target.
++    fn dynamics(&mut self, s: &Settings, o: &Observations) {
++        let stick = if self.stick_924.abs() > 0.01 { self.stick_924 } else { 0.0 };
++        let direction = if stick > 0.0 { 1.0 } else if stick >= 0.0 { 0.0 } else { -1.0 };
++        if self.flags_1345 & 0x80 != 0 || self.flags_1345 & 0x40 == 0 {
++            let angle = self.grab_angle(o);
++            let reach = clamp(self.grab_distance_860, 0.001, 1e9);
++            let tangent =
++                crate::player::offboard::contact_toolkit::analyzer_math::tangent(-angle);
++            self.target_864 =
++                clamp(tangent.mul_add(reach, self.along_836), -self.limit_932, self.limit_932);
++        }
++        let mut speed = 7200.0
++            * dot(
++                sub(
++                    line_point(&self.frames[1], self.along_836),
++                    line_point(&self.frames[0], self.along_836),
++                ),
++                self.frames[1][0],
++            );
++        let k = s.speed_filter_1ea5;
++        self.fast_1000 = 0;
++        self.line_speed_868 = (1.0 - k) * self.line_speed_868 + k * speed;
++        if self.line_speed_868.abs() > s.fast_speed_30da {
++            self.fast_1000 = if self.line_speed_868 > 0.0 { 1 } else { -1 };
++        }
++        let speed_sign = sign(self.line_speed_868);
++        let magnitude = self.line_speed_868 * speed_sign;
++        self.dynamics_876_896[1] =
++            -((magnitude - s.excess_speed_466f.evaluate(magnitude)).max(0.0) * speed_sign);
++        let steering = self.stick_924.abs() > 0.01 || self.fast_1000 != 0;
++        let latched = !steering && self.flags_1344 & 2 != 0;
++        if !latched {
++            self.flags_1344 &= !3;
++        }
++        if matches!(self.phase_1324, 0 | 4) || self.flags_1345 & 0x40 == 0 {
++            self.dynamics_876_896[0] = 0.0;
++            self.line_speed_868 *= 1.0 - k;
++            for v in &mut self.dynamics_876_896[1..] {
++                *v = 0.0;
++            }
++            return;
++        }
++        if self.flags_1344 & 3 == 3 {
++            self.dynamics_876_896[0] = 0.0;
++            self.target_864 = self.latched_900;
++            self.line_speed_868 = (1.0 - k) * self.line_speed_868 + k * speed;
++            for v in &mut self.dynamics_876_896[1..] {
++                *v = 0.0;
++            }
++            return;
++        }
++        let opposed = self.fast_1000 != 0
++            && stick != 0.0
++            && self.line_speed_868 != 0.0
++            && (stick > 0.0) != (self.line_speed_868 > 0.0);
++        speed = if self.stick_924.abs() > 0.01 {
++            let at = if opposed { self.line_speed_868.abs() } else { 0.0 };
++            (s.speed_limit_7fa1.evaluate(at) * stick).abs()
++        } else {
++            0.0
++        };
++        let force = s.stick_force_e496;
++        let d = &mut self.dynamics_876_896;
++        d[0] = force * direction;
++        let moving = self.line_speed_868 + d[1];
++        d[2] = 0.0;
++        if !steering {
++            let spring = if self.flags_1344 & 2 != 0 {
++                clamp((self.latched_900 - self.along_836) * RATE, -force, force)
++            } else {
++                0.0
++            };
++            d[2] = clamp((spring - moving.mul_add(STEP, d[4])) * RATE, -force, force);
++        }
++        if d[0] != 0.0 && d[2] != 0.0 && (d[0] > 0.0) == (d[2] > 0.0) {
++            let reduced = d[0] - d[2];
++            //Native tests |876| (always nonzero here), not its sign.
++            d[0] = if d[0].abs() > 0.0 { reduced.max(0.0) } else { reduced.min(0.0) };
++        }
++        d[3] = ((d[2] + self.line_speed_868) + d[1]) + d[0];
++        let mut high = if latched { s.speed_limit_7fa1.evaluate(0.0) } else { speed };
++        let mut low = -high;
++        if self.fast_1000 == 1 {
++            high = f32::MAX;
++        }
++        if self.fast_1000 == -1 {
++            low = -f32::MAX;
++        }
++        let velocity = clamp(d[3].mul_add(STEP, d[4]), low, high);
++        let a = clamp(self.speed_832, 0.01, 1e9);
++        let b = clamp(self.grab_distance_860, 0.01, 1e9);
++        let c = clamp(self.speed_832, 0.0, 1e9);
++        let (inverse_a, inverse_b) = (1.0 / a, 1.0 / b);
++        d[4] = (((velocity * inverse_a) * b) * inverse_b) * c;
++        if !steering && !latched {
++            self.flag_1004 = 1;
++            return;
++        }
++        let relative = (-self.relative_velocity_844).mul_add(s.relative_bias_6c62, d[4]);
++        let next = if self.fast_1000 != 0 {
++            self.flag_1004 = 1;
++            relative.mul_add(STEP, self.target_864)
++        } else {
++            self.flag_1004 = 0;
++            (inverse_a * relative).mul_add(b, self.along_836)
++        };
++        let next = clamp(next, -self.limit_932, self.limit_932);
++        let d = &mut self.dynamics_876_896;
++        d[5] = ((next - self.along_836) * inverse_b) * c;
++        let target = (d[5] * inverse_a).mul_add(b, self.along_836);
++        let to_latched = self.latched_900 - self.target_864;
++        let past = target - self.latched_900;
++        if latched && to_latched != 0.0 && past != 0.0 && (to_latched > 0.0) == (past > 0.0) {
++            self.target_864 = self.latched_900;
++            self.flags_1344 |= 1;
++            return;
++        }
++        self.target_864 = target;
++    }
++
++    ///82D49AB8 per-phase targets, hand target smoothing and timers.
++    fn phase_targets(&mut self, s: &Settings) {
++        match self.phase_1324 {
++            0 => {
++                self.hand_target_904 =
++                    clamp(self.target_864, -self.half_length_928, self.half_length_928);
++            }
++            1 => self.released_1328_1332 = [0, 0],
++            2 | 3 => {
++                let reach = if self.phase_1324 == 2 {
++                    self.limit_932
++                } else {
++                    self.half_length_928 + s.reach_extra_aed1
++                };
++                let target = if self.along_836 > 0.0 { reach } else { -reach };
++                if self.flags_1344 & 2 == 0 {
++                    self.latched_900 = target;
++                    self.flags_1344 = (self.flags_1344 & 0xfc) | 2;
++                }
++                if self.flags_1344 & 1 != 0 {
++                    self.target_864 = target;
++                }
++                if self.phase_1324 == 2 {
++                    let running = self.line_speed_868 != 0.0
++                        && self.along_836 != 0.0
++                        && (self.line_speed_868 > 0.0) == (self.along_836 > 0.0)
++                        && self.line_speed_868.abs() > s.overrun_speed_007c;
++                    if running {
++                        self.overrun_timer_960 += STEP;
++                    } else {
++                        self.overrun_timer_960 = 0.0;
++                    }
++                    self.released_1328_1332 =
++                        if self.along_836 > 0.0 { [1, 0] } else { [0, 1] };
++                } else {
++                    self.released_1328_1332 = [1, 1];
++                }
++            }
++            _ => {}
++        }
++        self.hand_target(s);
++        self.normalized_936 = clamp(self.along_836 / self.half_length_928, -1.0, 1.0);
++        if self.timer_1020 > 0.0 {
++            self.timer_1020 -= STEP;
++        }
++        self.phase_timer_948 += STEP;
++    }
++
++    ///82D49D70 hand target and hand position smoothing.
++    fn hand_target(&mut self, s: &Settings) {
++        if self.flags_1344 & 8 != 0 {
++            let stick = if self.stick_924.abs() > 0.01 { self.stick_924 } else { 0.0 };
++            let mut target = clamp(self.along_836, -self.limit_932, self.limit_932);
++            if (stick > 0.5 && target < self.hand_target_904)
++                || (stick < -0.5 && target > self.hand_target_904)
++            {
++                target = self.hand_target_904;
++            }
++            self.hand_target_904 = target;
++            if self.along_velocity_840.abs() < s.settle_speed_1f5f
++                && (self.along_836 - self.hand_908).abs() < s.settle_distance_4cc8
++            {
++                self.flags_1344 &= !8;
++            }
++            self.idle_timer_964 = 0.0;
++        } else {
++            self.idle_timer_964 += STEP;
++            if (self.along_836 - self.hand_908).abs() > s.chase_distance_8fef
++                || self.idle_timer_964 > s.chase_time_cfbb
++            {
++                self.flags_1344 |= 8;
++            }
++        }
++        self.hand_step_912 = clamp(
++            (self.hand_target_904 - self.hand_908) * s.hand_gain_ff6b,
++            self.hand_step_912 - s.hand_step_ea88,
++            self.hand_step_912 + s.hand_step_ea88,
++        );
++        self.hand_908 += self.hand_step_912;
++    }
++
++    ///82D4A378: hand release flags, hand height, arm reach and the two
++    ///FootIk external hand targets (82BD9728 left / 82BD97D0 right).
++    pub fn hands(&mut self, s: &Settings, pose: &HandPose) -> [Option<HandTarget>; 2] {
++        let degrees = self.angle_940 * f32::from_bits(0x4265_2ee1);
++        if self.phase_1324 == 0 {
++            self.released_1328_1332 = [0, 0];
++        }
++        if degrees > s.release_left_high_11b7 || !(degrees >= s.release_left_low_e2dc) {
++            self.released_1328_1332[0] = 1;
++        }
++        if degrees > s.release_right_high_c505 || !(degrees >= s.release_right_low_c6c3) {
++            self.released_1328_1332[1] = 1;
++        }
++        let a2w = pose.animation_to_world;
++        let hand_point = at_distance(self.record(), self.hand_908);
++        let hand_point = point(&self.relative_384, hand_point);
++        let grab = point(&a2w, [0.0, pose.world_grab_y, pose.world_grab_z, 0.0]);
++        let height = (grab[1] - hand_point[1]) * 0.1 + self.hand_height_988;
++        self.hand_height_988 = height.max(0.0).min(0.8);
++        let offset = add([0.0, pose.world_grab_y, pose.world_grab_z, 0.0], s.grab_offset_858d);
++        let mut hands = pose.hands;
++        if pose.mirrored {
++            for h in &mut hands {
++                h[0] = -h[0];
++                h[2] = -h[2];
++            }
++        }
++        let limit = self.half_length_928;
++        let along = hands.map(|h| clamp(self.hand_908 + sub(h, offset)[0], -limit, limit));
++        let points = along.map(|d| point(&self.relative_384, at_distance(self.record(), d)));
++        let carry = compose(&self.relative_448, &a2w);
++        let reach = s.arm_reach_eff7 + s.arm_radius_2c75;
++        for i in 0..2 {
++            let arm = point(&carry, pose.arms[i]);
++            self.arm_distances_916_920[i] = length(sub(arm, points[i]));
++            if self.arm_distances_916_920[i] > reach {
++                self.released_1328_1332[i] = 1;
++            }
++        }
++        for i in 0..2 {
++            if self.released_1328_1332[i] != self.last_released_1336_1340[i] {
++                self.last_released_1336_1340[i] = self.released_1328_1332[i];
++                self.hand_blend_targets_976_980[i] =
++                    if self.released_1328_1332[i] == 1 { 0.0 } else { 1.0 };
++            }
++        }
++        for i in 0..2 {
++            let blend = self.hand_blends_968_972[i];
++            self.hand_blends_968_972[i] =
++                clamp(self.hand_blend_targets_976_980[i], blend - 0.2, blend + 0.03);
++        }
++        self.hand_flags_984 = 0;
++        let velocity = scale(self.line_velocity_752, STEP);
++        let mut out = [None; 2];
++        for i in 0..2 {
++            if self.hand_blends_968_972[i] > 0.0 {
++                self.hand_points_704_720[1 - i] = points[i];
++                let origin = point(&a2w, pose.arms[i]);
++                out[i] = Some(HandTarget {
++                    world_position: clamp_point(add(points[i], velocity), origin, s.arm_radius_2c75),
++                    blend: self.hand_blends_968_972[i],
++                });
++                self.hand_flags_984 |= 1 << i;
++            }
++        }
++        out
++    }
++
++    ///82D4B500 pull toward the line (force tag 6 at body point 0). `root_z`
++    ///is the raw animation part0 global z, `world_grab_z` Processed+2820.
++    pub fn pull(&mut self, s: &Settings, p: PullInput) -> V {
++        let c = clamp(dot(self.grab_direction_624, self.pull_direction_784), 0.5, 1.0);
++        //82D4B5E8: f10 = (832 - 2612) + 832, f7 = f10/60 + 852.
++        let x = ((self.speed_832 - p.signed_speed) + self.speed_832)
++            .mul_add(STEP, self.lateral_852)
++            + self.line_lateral_848;
++        let z = if p.mirrored { -p.root_z } else { p.root_z };
++        let bias = if self.phase_1324 == 2 { s.pull_bias_reach_95d9 } else { s.pull_bias_b7a8 };
++        let g = s.pull_graph_00a1.evaluate(x - ((p.world_grab_z - z) + bias));
++        self.absorb_956 = -self.lateral_velocity_856;
++        let inverse_c = reciprocal(c);
++        let force = madd(
++            scale(self.pull_direction_784, g),
++            inverse_c,
++            scale(scale(self.pull_direction_784, -(s.pull_damping_71a8 * self.absorb_956)), inverse_c),
++        );
++        clamp_length(scale(scale(force, p.mass), reciprocal(STEP)), 500.0)
++    }
++
++    ///82D4B8C0 with 82D4BAC0/82D4BCF8: pull direction, body angle and the
++    ///requested deck angular displacement (applied only while moving).
++    pub fn steer(&mut self, s: &Settings, effective_z: V) -> V {
++        let n = self.normal_800;
++        self.target_736 = line_point(&self.grab_frame_528, self.target_864);
++        let toward = sub(self.target_736, self.board_592);
++        let along = sub(line_point(&self.grab_frame_528, self.along_836), self.board_592);
++        self.pull_direction_784 = normalize(reject(toward, n));
++        let along = normalize(reject(along, n));
++        self.pull_angle_952 = wrap(signed_angle(along, self.pull_direction_784, n));
++        let angle = wrap(signed_angle(effective_z, self.pull_direction_784, n));
++        let grab = wrap(signed_angle(effective_z, self.grab_direction_624, n));
++        let difference = wrap(angle - grab);
++        let angular = self.turn(s, angle, difference);
++        self.angle_940 = if self.flags_1345 & 0x40 != 0 { difference } else { -grab };
++        angular
++    }
++    ///82D4BCF8 rate-limited turn about the up-facing normal.
++    fn turn(&self, s: &Settings, angle: f32, difference: f32) -> V {
++        let rate = (s.turn_rate_0b19 * f32::from_bits(0x3c8e_fa35)) * STEP;
++        let step = clamp(angle, -rate, rate);
++        let n = self.normal_800;
++        let up = if 0.0 > n[1] { scale(n, -1.0) } else { n };
++        let v = scale(up, crate::trigonometry::sin(step));
++        let time = s.turn_time_3f79.evaluate(self.time_992);
++        let speed = s.heading_adjust_vs_speed.evaluate(self.speed_832);
++        let degrees = difference * 180.0 * f32::from_bits(0x3ea2_f983);
++        let settle = if self.flag_1004 == 1 && degrees.abs() < 1.0 {
++            s.turn_settle_1ff7.evaluate(degrees)
++        } else {
++            1.0
++        };
++        let product = settle * speed;
++        scale(v, if time - product >= 0.0 { time } else { product })
++    }
++
++    ///82D4A0C0 body lean. Returns the skateboard offset rows when the lean
++    ///exceeds two degrees (orientation refreshed for 15 updates).
++    pub fn lean(&mut self, s: &Settings, push_speed: bool) -> Option<Frame> {
++        let side = if self.angle_940 >= 0.0 { 1.0 } else { -1.0 };
++        let degrees = (self.angle_940 * side) * f32::from_bits(0x4265_2ee1);
++        let radians = f32::from_bits(0x3c8e_fa35);
++        let mut target = s.lean_30fd.evaluate(degrees) * radians * side;
++        if push_speed {
++            target = 0.0;
++        }
++        let limit = 10.0 * radians;
++        self.lean_944 += clamp((target - self.lean_944) * 0.25, -limit, limit);
++        if !(self.lean_944.abs() > 2.0 * radians) {
++            return None;
++        }
++        let (sin, cos) = crate::trigonometry::sin_cos(self.lean_944);
++        Some([[cos, 0.0, -sin, cos], [0.0, 1.0, 0.0, 0.0], [sin, 0.0, cos, sin], [0.0; 4]])
++    }
++
++    ///82D47BD8 release speed and push-contact latch. The vehicle reaction
++    ///impulses of this function have no GTA counterpart and are not applied.
++    pub fn release_speed(&mut self, push_contact: bool) {
++        if self.flags_1345 & 0x10 == 0 {
++            let record_scale = self.record().scalar(240);
++            let boost = (200.0 / (1.0 / record_scale)).min(3.5);
++            self.release_speed_996 = (8.0 - self.speed_832).max(0.0).min(boost) + self.speed_832;
++            if push_contact {
++                self.flags_1345 |= 0x10;
++            }
++        } else if !push_contact {
++            self.flags_1345 &= !0x10;
++        }
++    }
++    ///82D479C8 brake latch (vehicle brake impulse not applied in GTA).
++    pub fn brake(&mut self, brake: f32) {
++        self.flags_1345 &= !8;
++        if brake != 0.0 && length(self.line_velocity_752) > f32::from_bits(0x3780_0000) {
++            self.flags_1345 |= 8;
++        }
++    }
++
++    ///82D4AFB8 exit sequencing; returns the release forces (tag 6, point 0).
++    pub fn exit(&mut self, s: &Settings, grab_held: bool, mass: f32) -> [Option<V>; 2] {
++        if !grab_held {
++            self.phase_1324 = 4;
++        }
++        if !matches!(self.phase_1324, 0 | 3 | 4)
++            && self.released_1328_1332 == [1, 1]
++            && self.timer_1020 <= 0.0
++        {
++            self.phase_1324 = 4;
++            self.flags_1344 = (self.flags_1344 & !0x70) | 0x10;
++        }
++        let mut force = [None; 2];
++        if self.phase_1324 == 4 {
++            if self.exit_cooldown_1016 <= 0.0 {
++                self.exit_cooldown_1016 = s.exit_cooldown_6595;
++            }
++            if self.release_counter_1320 == 1 {
++                if self.flags_1344 & 0x40 != 0 {
++                    let f = (-self.speed_832)
++                        .max(self.lateral_velocity_856 + s.release_inner_58b6)
++                        .min(0.0);
++                    force[0] = Some(self.release_force(f, mass));
++                }
++                if self.flags_1344 & 0x20 != 0 {
++                    let f = self.lateral_velocity_856 + s.release_outer_8524;
++                    force[1] = Some(self.release_force(f, mass));
++                }
++            }
++            self.release_counter_1320 += 1;
++            if self.release_counter_1320 > 3 {
++                self.flags_1344 |= 0x10;
++            }
++        } else {
++            self.release_counter_1320 = 0;
++        }
++        if self.kind_1312 == 2 {
++            let rates = self.record_1024.as_ref().map_or([0.0; 4], |r| r.vector(144));
++            if rates[0] * rates[0] + rates[2] * rates[2] > 1.0 {
++                self.flags_1344 |= 0x10;
++            }
++        }
++        force
++    }
++    fn release_force(&self, f: f32, mass: f32) -> V {
++        scale(scale(scale(self.grab_direction_624, f), mass), reciprocal(STEP))
++    }
++    ///End of Update82D477C0.
++    pub fn finish(&mut self) {
++        self.flags_1345 &= 0x7f;
++    }
++
++    ///Fill82D4C078. `board_y` is Processed+176 y.
++    pub fn fill(&self, board_y: f32) -> Fill {
++        let hand = line_point(&self.frames[1], self.hand_908);
++        Fill {
++            grabbing_304: self.flags_1344 & 0x10 == 0 && self.flags_1344 & 0x80 != 0,
++            animation_132: self.hand_height_988,
++            animation_136: self.hand_step_912 * RATE,
++            animation_140: self.hand_flags_984,
++            ground_280: hand[1] - board_y,
++            ground_284: self.absorb_956,
++            ground_288: self.normalized_936,
++            ground_292: self.exit_cooldown_1016,
++            ground_308: self.release_speed_996,
++            state_36: self.kind_1312,
++            state_40: self.id_1316,
++            state_53: (self.flags_1345 >> 3) & 1 != 0,
++        }
++    }
++}
++#[derive(Clone, Copy, Debug)]
++pub struct PullInput {
++    ///Processed+2612 signed speed and +2660 total mass.
++    pub signed_speed: f32,
++    pub mass: f32,
++    pub root_z: f32,
++    pub mirrored: bool,
++    pub world_grab_z: f32,
++}
++///Apply `inner` first, then `outer`.
++fn compose(outer: &Frame, inner: &Frame) -> Frame {
++    let rotate = |v: V| madd(outer[2], v[2], madd(outer[1], v[1], scale(outer[0], v[0])));
++    [rotate(inner[0]), rotate(inner[1]), rotate(inner[2]), point(outer, inner[3])]
++}
+diff --git a/crates/skate-core/src/player/skitch/math.rs b/crates/skate-core/src/player/skitch/math.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/skate-core/src/player/skitch/math.rs
+@@ -0,0 +1,147 @@
++//! Vector/frame helpers shared by the Skitch functions. Frames are four rows
++//! (three axes and a position); points map as row0*x + row1*y + row2*z + row3.
++use super::{Frame, V};
++use crate::player::offboard::grab_scene::Record;
++
++pub(super) const STEP: f32 = f32::from_bits(0x3c88_8889); //1/60, 820849C8.
++pub(super) const RATE: f32 = 60.0;
++
++pub(super) fn dot(a: V, b: V) -> f32 {
++    a[2].mul_add(b[2], a[1].mul_add(b[1], a[0] * b[0]))
++}
++pub(super) fn sub(a: V, b: V) -> V {
++    std::array::from_fn(|i| a[i] - b[i])
++}
++pub(super) fn add(a: V, b: V) -> V {
++    std::array::from_fn(|i| a[i] + b[i])
++}
++pub(super) fn scale(a: V, k: f32) -> V {
++    a.map(|v| v * k)
++}
++///a*k + b.
++pub(super) fn madd(a: V, k: f32, b: V) -> V {
++    std::array::from_fn(|i| a[i].mul_add(k, b[i]))
++}
++pub(super) fn cross(a: V, b: V) -> V {
++    [
++        (-a[2]).mul_add(b[1], a[1] * b[2]),
++        (-a[0]).mul_add(b[2], a[2] * b[0]),
++        (-a[1]).mul_add(b[0], a[0] * b[1]),
++        0.0,
++    ]
++}
++fn rsqrt(d: f32) -> f32 {
++    let mut r = d.sqrt().recip();
++    for _ in 0..2 {
++        r = (r * 0.5).mul_add((-d).mul_add(r * r, 1.0), r);
++    }
++    r
++}
++///vmsum3fp + rsqrte with two refinements; vsel returns zero for zero input.
++pub(super) fn length(v: V) -> f32 {
++    let d = dot(v, v);
++    if d == 0.0 { 0.0 } else { d * rsqrt(d) }
++}
++///The native callers multiply by rsqrte without a zero guard.
++pub(super) fn normalize(v: V) -> V {
++    scale(v, rsqrt(dot(v, v)))
++}
++pub(super) fn reciprocal(v: f32) -> f32 {
++    let mut r = v.recip();
++    for _ in 0..2 {
++        r = r.mul_add((-r).mul_add(v, 1.0), r);
++    }
++    r
++}
++///Component of `v` orthogonal to the unit normal.
++pub(super) fn reject(v: V, n: V) -> V {
++    sub(v, scale(n, dot(v, n)))
++}
++pub(super) fn point(f: &Frame, p: V) -> V {
++    madd(f[2], p[2], madd(f[1], p[1], madd(f[0], p[0], f[3])))
++}
++///Point at `along` on a line frame's row0 axis.
++pub(super) fn line_point(f: &Frame, along: f32) -> V {
++    madd(f[0], along, f[3])
++}
++///82D48148 relative transform: points attached to `p` carried onto `q`.
++pub(super) fn relative(p: &Frame, q: &Frame) -> Frame {
++    let mut out = [[0.0; 4]; 4];
++    for i in 0..3 {
++        out[i] = madd(q[2], p[2][i], madd(q[1], p[1][i], scale(q[0], p[0][i])));
++    }
++    let t = [0, 1, 2].map(|i| -dot(p[3], p[i]));
++    out[3] = madd(q[2], t[2], madd(q[1], t[1], madd(q[0], t[0], q[3])));
++    out
++}
++pub(super) fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
++    v.max(lo).min(hi)
++}
++///82BD41B0: scalar division after the guarded length.
++pub(super) fn clamp_point(target: V, origin: V, radius: f32) -> V {
++    let delta = sub(target, origin);
++    let distance = length(delta);
++    if radius >= distance { target } else { madd(delta, radius / distance, origin) }
++}
++///82BD3D90 ClampVectorWithinMaxLength, including the short-vector return.
++pub(super) fn clamp_length(v: V, maximum: f32) -> V {
++    let length = length(v);
++    if !(length >= f32::from_bits(0x3780_0000)) {
++        return v;
++    }
++    let bound = if maximum - length >= -0.0 { length } else { maximum };
++    v.map(|x| (x * bound) * reciprocal(length))
++}
++///8286CD88 product gate and plane rejection, then the shared signed angle.
++pub(super) fn signed_angle(a: V, b: V, axis: V) -> f32 {
++    if !(dot(a, a) * dot(b, b) > f32::from_bits(0x3780_0000)) {
++        return 0.0;
++    }
++    let xyz = |v: V| crate::math::Vector3::new(v[0], v[1], v[2]);
++    crate::riding::collision_response::signed_angle(
++        xyz(reject(a, axis)),
++        xyz(reject(b, axis)),
++        xyz(axis),
++    )
++}
++///Fold into (-pi, pi] with the native 0.159155 turn fraction.
++pub(super) fn wrap(angle: f32) -> f32 {
++    let turns = angle * f32::from_bits(0x3e22_f983);
++    let fraction = turns - turns.floor();
++    (fraction - if fraction > 0.5 { 1.0 } else { 0.0 }) * f32::from_bits(0x40c9_0fdb)
++}
++pub(super) fn sign(v: f32) -> f32 {
++    if v > 0.0 { 1.0 } else if v >= 0.0 { 0.0 } else { -1.0 }
++}
++
++///82D2D550: point at signed distance `d` from the chord middle. Walks the
++///authored local points along the local chord direction; byte200 bit5 selects
++///the reversed parameterisation. Ends are the (possibly swapped) endpoints.
++pub(super) fn at_distance(record: &Record, d: f32) -> V {
++    let half = record.scalar(180);
++    let [a, b] = record.endpoints();
++    if -half >= d {
++        return a;
++    }
++    if d >= half {
++        return b;
++    }
++    let points = record.points();
++    if points.len() <= 1 {
++        return a;
++    }
++    let target = if record.byte(200) & 0x20 != 0 { half - d } else { d + half };
++    let chord = normalize(sub(points[points.len() - 1], points[0]));
++    let mut sum = 0.0;
++    for pair in points.windows(2) {
++        let segment = sub(pair[1], pair[0]);
++        let projection = dot(segment, chord).max(f32::from_bits(0x38d1_b717));
++        sum += projection;
++        if sum > target {
++            let local = sub(pair[1], scale(segment, (sum - target) * reciprocal(projection)));
++            let frame = [0, 16, 32, 48].map(|o| record.vector(o));
++            return point(&frame, local);
++        }
++    }
++    b
++}
+diff --git a/crates/skate-core/src/player/skitch/tests.rs b/crates/skate-core/src/player/skitch/tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/skate-core/src/player/skitch/tests.rs
+@@ -0,0 +1,183 @@
++//! Synthetic geometry and tuning only; no retail-derived values.
++use super::*;
++use crate::player::offboard::grab_scene::{Descriptor, Geometry, RecordInput};
++use std::sync::Arc;
++
++fn flat(y: f32) -> PointGraph<8> {
++    PointGraph { x: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], y: [y; 8] }
++}
++fn settings() -> Settings {
++    Settings {
++        enter_delay_cc25: 0.25,
++        reach_margin_6027: 0.3,
++        moving_speed_1f85: 2.0,
++        speed_filter_1ea5: 0.2,
++        fast_speed_30da: 30.0,
++        excess_speed_466f: flat(100.0),
++        speed_limit_7fa1: flat(4.0),
++        stick_force_e496: 8.0,
++        relative_bias_6c62: 0.0,
++        reach_delay_81a1: 0.25,
++        overrun_time_08fe: 0.3,
++        reach_cancel_d60a: 0.25,
++        reach_cooldown_44ee: 0.25,
++        reach_release_ba19: 0.25,
++        reach_exit_f5f9: 0.25,
++        reach_extra_aed1: 0.5,
++        overrun_speed_007c: 40.0,
++        settle_speed_1f5f: 0.03,
++        settle_distance_4cc8: 0.05,
++        chase_distance_8fef: 0.3,
++        chase_time_cfbb: 1.5,
++        hand_gain_ff6b: 0.5,
++        hand_step_ea88: 0.05,
++        release_left_low_e2dc: -50.0,
++        release_right_low_c6c3: -30.0,
++        release_left_high_11b7: 30.0,
++        release_right_high_c505: 50.0,
++        arm_reach_eff7: 0.6,
++        arm_radius_2c75: 0.8,
++        grab_offset_858d: [0.0, -0.05, 0.02, 0.0],
++        pull_graph_00a1: flat(1.0),
++        pull_bias_b7a8: 0.05,
++        pull_bias_reach_95d9: 0.05,
++        pull_damping_71a8: 0.1,
++        turn_rate_0b19: 90.0,
++        turn_time_3f79: flat(1.0),
++        heading_adjust_vs_speed: flat(1.0),
++        turn_settle_1ff7: flat(1.0),
++        lean_30fd: flat(5.0),
++        exit_cooldown_6595: 0.25,
++        release_inner_58b6: -1.0,
++        release_outer_8524: 1.0,
++        wheel_gap_40aa: 0.2,
++        wheel_gap_short_f178: 0.1,
++        airborne_time_03a5: 0.2,
++        detect_extents_978b: [0.5, 0.5, 1.5, 0.0],
++        detect_offset_8e3c: [0.0, 0.8, 0.0, 0.0],
++        detect_distance_bf43: 0.5,
++        detect_time_424a: 0.2,
++    }
++}
++///A 2 m bar across +x at height 1, z = `z`, moving with the record frame.
++fn record(z: f32) -> Record {
++    let geometry = Arc::new(Geometry {
++        id: 7,
++        points: vec![[-1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
++        approach_vectors: vec![[0.0, 0.0, -1.0, 0.0]],
++        word_60: 0,
++    });
++    Record::from_geometry(RecordInput {
++        descriptor: Descriptor { kind: 1, id: 0x8000_0005 },
++        geometry,
++        frame: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 1.0, z, 0.0]],
++        object_vector_128: [0.0, 0.0, 5.0, 0.0],
++        assembly: None,
++        word_272: 0,
++    })
++    .unwrap()
++}
++fn observations(board_z: f32) -> Observations {
++    Observations {
++        effective_x: [1.0, 0.0, 0.0, 0.0],
++        effective_z: [0.0, 0.0, 1.0, 0.0],
++        board: [0.1, 0.0, board_z, 0.0],
++        normal: [0.0, 1.0, 0.0, 0.0],
++        turn: 0.0,
++        spin: 0.0,
++        wheel_gap: 0.0,
++        airborne_time: 0.0,
++    }
++}
++
++#[test]
++fn point_at_distance_walks_local_points_and_respects_reverse() {
++    let r = record(3.0);
++    assert_eq!(math::at_distance(&r, -5.0), [-1.0, 1.0, 3.0, 0.0]);
++    assert_eq!(math::at_distance(&r, 5.0), [1.0, 1.0, 3.0, 0.0]);
++    let p = math::at_distance(&r, 0.5);
++    assert!((p[0] - 0.5).abs() < 1e-5 && p[2] == 3.0);
++    let mut reversed = r.clone();
++    reversed.0[50] ^= 0x2000_0000;
++    let p = math::at_distance(&reversed, 0.5);
++    assert!((p[0] + 0.5).abs() < 1e-5);
++}
++
++#[test]
++fn held_line_settles_into_phase_one_and_latches_grab() {
++    let s = settings();
++    let mut k = Skitch::default();
++    k.enter(&s, record(3.0));
++    assert_eq!((k.kind_1312, k.id_1316), (1, 0x8000_0005));
++    let mut z = 3.0 - 1.2;
++    for tick in 0..30 {
++        z += 5.0 / 60.0;
++        k.begin(true);
++        k.track(&s, record(3.0 + 5.0 * (tick + 1) as f32 / 60.0), &observations(z));
++        k.steer(&s, [0.0, 0.0, 1.0, 0.0]);
++        assert!(k.exit(&s, true, 70.0).iter().all(Option::is_none));
++        k.finish();
++    }
++    assert_eq!(k.phase(), 1);
++    assert!(k.flags_1345 & 0x80 == 0);
++    assert!((k.half_length_928 - 1.0).abs() < 1e-5);
++    assert!((k.along_836 - 0.1).abs() < 1e-3);
++    //Board trails the bar along +z: the pull points forward.
++    assert!(k.pull_direction_784[2] > 0.99);
++    let fill = k.fill(0.0);
++    assert!(fill.grabbing_304);
++    assert_eq!((fill.state_36, fill.state_40), (1, 0x8000_0005));
++    let pull = k.pull(&s, PullInput { signed_speed: 5.0, mass: 70.0, root_z: 0.0,
++        mirrored: false, world_grab_z: 0.0 });
++    assert!(math::length(pull) <= 500.0 + 1e-3);
++}
++
++#[test]
++fn losing_the_record_releases_after_three_updates() {
++    let s = settings();
++    let mut k = Skitch::default();
++    k.enter(&s, record(3.0));
++    k.begin(true);
++    k.track(&s, record(3.0), &observations(1.8));
++    k.finish();
++    for _ in 0..4 {
++        k.begin(false);
++        k.exit(&s, false, 70.0);
++        k.finish();
++    }
++    assert_eq!(k.phase(), 4);
++    assert!(k.flags_1344 & 0x10 != 0);
++    assert!(!k.fill(0.0).grabbing_304);
++}
++
++#[test]
++fn stick_selection_prefers_the_larger_same_side_input() {
++    let s = settings();
++    let mut k = Skitch::default();
++    k.enter(&s, record(3.0));
++    let mut o = observations(1.8);
++    o.turn = 0.3;
++    o.spin = 0.7;
++    k.begin(true);
++    k.track(&s, record(3.0), &o);
++    assert_eq!(k.stick_924, 0.7);
++    o.spin = -0.9;
++    k.track(&s, record(3.0), &o);
++    assert_eq!(k.stick_924, 0.3);
++}
++
++#[test]
++fn lean_rows_follow_the_native_layout() {
++    let s = settings();
++    let mut k = Skitch::default();
++    k.angle_940 = 1.0;
++    let mut rows = None;
++    for _ in 0..20 {
++        rows = k.lean(&s, false).or(rows);
++    }
++    let rows = rows.expect("lean beyond two degrees");
++    let (sin, cos) = crate::trigonometry::sin_cos(k.lean_944);
++    assert_eq!(rows[0], [cos, 0.0, -sin, cos]);
++    assert_eq!(rows[2], [sin, 0.0, cos, sin]);
++    assert_eq!(k.lean(&s, true).is_some(), k.lean_944.abs() > 2.0 * 0.0174533);
++}
+--- a/crates/skate-core/src/riding/grounded/state/corrections.rs
++++ b/crates/skate-core/src/riding/grounded/state/corrections.rs
+@@ -314,6 +314,7 @@
+             flag_2731: false,
+             manual_correction_2732: false,
+             manual_opposition_2733: false,
++            skitch_id_2736: 0,
+             hang_detection_frames_2740: 0,
+             hang_force_frames_2744: 0,
+             hung_wipeout_frames_2748: 0,
+--- a/crates/skate-core/src/riding/grounded/state/data.rs
++++ b/crates/skate-core/src/riding/grounded/state/data.rs
+@@ -56,6 +56,8 @@
+     pub flag_2731: bool,
+     pub manual_correction_2732: bool,
+     pub manual_opposition_2733: bool,
++    ///Skitch detection82D39D98 records the selected spline id here too.
++    pub skitch_id_2736: u32,
+     pub hang_detection_frames_2740: i32,
+     pub hang_force_frames_2744: i32,
+     pub hung_wipeout_frames_2748: i32,
+@@ -101,6 +103,7 @@
+             flag_2731: false,
+             manual_correction_2732: false,
+             manual_opposition_2733: false,
++            skitch_id_2736: 0,
+             hang_detection_frames_2740: 0,
+             hang_force_frames_2744: 0,
+             hung_wipeout_frames_2748: 0,
+--- a/crates/skate-core/src/riding/grounded/state/output.rs
++++ b/crates/skate-core/src/riding/grounded/state/output.rs
+@@ -220,6 +220,7 @@
+             flag_2731: true,
+             manual_correction_2732: true,
+             manual_opposition_2733: true,
++            skitch_id_2736: 0,
+             hang_detection_frames_2740: 0,
+             hang_force_frames_2744: 0,
+             hung_wipeout_frames_2748: 0,
+--- a/crates/skate-core/src/riding/grounded/state/update.rs
++++ b/crates/skate-core/src/riding/grounded/state/update.rs
+@@ -325,6 +325,7 @@
+             flag_2731: false,
+             manual_correction_2732: false,
+             manual_opposition_2733: false,
++            skitch_id_2736: 0,
+             hang_detection_frames_2740: 0,
+             hang_force_frames_2744: 0,
+             hung_wipeout_frames_2748: 0,
+--- a/crates/skate-host/src/graph_host/mod.rs
++++ b/crates/skate-host/src/graph_host/mod.rs
+@@ -31,6 +31,7 @@
+ pub(crate) mod motion_hand_services;
+ mod motion_hooks;
+ mod motion_hippy_jump;
++pub(crate) mod motion_skitch;
+ mod motion_finger_flip;
+ pub(crate) mod motion_intent_filter;
+ mod motion_kickturn;
+--- a/crates/skate-host/src/graph_host/motion.rs
++++ b/crates/skate-host/src/graph_host/motion.rs
+@@ -80,6 +80,7 @@
+     pub grind_conditions: Option<super::motion_grind::conditions::Physical>,
+     pub(super) grind_settings: super::motion_grind::Settings,
+     pub shove_physical: Option<super::motion_shove::ShovePhysical>,
++    pub skitch_physical: Option<super::motion_skitch::Physical>,
+     pub hand_services: super::motion_hand_services::HandServices,
+     pub slide_latch: set_turning::SlideLatch,
+     ///SpecificCA4 bit26, getter8258F900/setter8258F910; reset clears it.
+@@ -114,6 +115,7 @@
+     pub physical_stance: Option<(bool, bool)>,
+     pub flags: super::motion_landing::Flags,
+     hippy_jump: super::motion_hippy_jump::Settings,
++    skitch: super::motion_skitch::Settings,
+     finger_flip: super::motion_finger_flip::Settings,
+     pub landing_physical: Option<super::motion_landing::Physical>,
+     pub wipeout_physical: Option<super::motion_wipeout::Physical>,
+@@ -238,6 +240,7 @@
+             grind_conditions: None,
+             grind_settings: super::motion_grind::Settings::load(data)?,
+             shove_physical: None,
++            skitch_physical: None,
+             hand_services: Default::default(),
+             slide_latch: set_turning::SlideLatch::default(),
+             is_power_sliding: false,
+@@ -291,6 +294,7 @@
+             kickturn: super::motion_kickturn::load_settings(data)?,
+             manual: super::motion_manual::settings(data)?,
+             hippy_jump: super::motion_hippy_jump::Settings::load(data)?,
++            skitch: super::motion_skitch::Settings::load(data)?,
+             finger_flip: super::motion_finger_flip::Settings::load(data)?,
+             next_instance: 1,
+         })
+--- a/crates/skate-host/src/graph_host/motion_execute_leaf.rs
++++ b/crates/skate-host/src/graph_host/motion_execute_leaf.rs
+@@ -481,6 +481,30 @@
+                                 state.end();
+                             }
+                             _ => unreachable!(),
++                        }
++                    }
++                    crate::graph_host::motion_stock_gameplay::Operation::EnterSkitchingBehaviour
++                    | crate::graph_host::motion_stock_gameplay::Operation::SkitchingBehaviour
++                    | crate::graph_host::motion_stock_gameplay::Operation::SkitchShimmyingBehaviour { .. } => {
++                        use crate::graph_host::motion_skitch::Kind;
++                        let kind = match &operation {
++                            crate::graph_host::motion_stock_gameplay::Operation::EnterSkitchingBehaviour => Kind::Enter,
++                            crate::graph_host::motion_stock_gameplay::Operation::SkitchingBehaviour => Kind::Skitching,
++                            crate::graph_host::motion_stock_gameplay::Operation::SkitchShimmyingBehaviour { direction } => Kind::Shimmy(*direction),
++                            _ => unreachable!(),
++                        };
++                        let state = match instance {
++                            Instance::Skitch(state) => state,
++                            _ => return Err("Skitch behaviour instance was not allocated".into()),
++                        };
++                        let physical = host.skitch_physical;
++                        match phase {
++                            0 => state.begin(kind, &host.skitch,
++                                &physical.ok_or("Skitch behaviour needs the completed PhysOut")?),
++                            1 => state.update(kind, &host.skitch,
++                                &physical.ok_or("Skitch behaviour needs the completed PhysOut")?,
++                                &mut host.animation)?,
++                            _ => state.end(kind, &mut host.animation),
+                         }
+                     }
+                     other => {
+--- a/crates/skate-host/src/graph_host/motion_gameplay_conditions.rs
++++ b/crates/skate-host/src/graph_host/motion_gameplay_conditions.rs
+@@ -26,6 +26,14 @@
+     pub footplant_contact_time: f32,
+     pub time_to_skitch: f32,
+     pub skitch_transition_time: f32,
++    ///Skitch Fill82D4C078: Animation140 hand flags and136 hand speed,
++    ///Ground284 absorb; anim_skitching layout0 absorb graph.
++    pub skitch_hand_flags: u32,
++    pub skitch_hand_speed: f32,
++    pub skitch_absorb: f32,
++    pub skitch_absorb_graph: skate_core::point_graph::PointGraph<8>,
++    ///Live ISkaterAnim virtual28 (mirrored animation).
++    pub animation_mirrored: bool,
+     /// TimeToLand82BA7250: PhysOutAir+184, gated by byte437.
+     pub time_to_land: f32,
+     pub time_to_land_valid: bool,
+@@ -87,6 +95,11 @@
+     PlayHandplant { phase: usize },
+     EnteringSkitch,
+     Skitching,
++    SkitchingWithAbsorb,
++    ///Authored direction: left1, right2.
++    SkitchShimmying { direction: u32 },
++    ///Authored side: front1, back2, both3.
++    SkitchingPosition { side: u32 },
+     IsMovingObject,
+ }
+ impl GameplayCondition {
+@@ -115,6 +128,9 @@
+                 | "ShouldPlayHandPlantAnim"
+                 | "IsEnteringSkitch"
+                 | "IsSkitching"
++                | "IsSkitchingWithAbsorb"
++                | "IsSkitchShimmying"
++                | "SkitchingPosition"
+                 | "IsMovingObject"
+         )
+     }
+@@ -139,6 +155,24 @@
+             "OkToDoTrickOnStairs" => Self::OkToDoTrickOnStairs,
+             "IsEnteringSkitch" => Self::EnteringSkitch,
+             "IsSkitching" => Self::Skitching,
++            "IsSkitchingWithAbsorb" => Self::SkitchingWithAbsorb,
++            //Factory82BCACD8: "right" 2, "left" 1.
++            "IsSkitchShimmying" => Self::SkitchShimmying {
++                direction: match a.text("direction") {
++                    Some("right") => 2,
++                    Some("left") => 1,
++                    value => return Err(format!("IsSkitchShimmying has unauthored direction {value:?}")),
++                },
++            },
++            //Ctor82BBBF90: front1, back2, both3.
++            "SkitchingPosition" => Self::SkitchingPosition {
++                side: match a.text("side") {
++                    Some("front") => 1,
++                    Some("back") => 2,
++                    Some("both") => 3,
++                    value => return Err(format!("SkitchingPosition has unauthored side {value:?}")),
++                },
++            },
+             "IsFootPlanting" => Self::FootPlanting,
+             "ShouldPrepareOneFootAirForFootplant" => Self::PrepareFootplant,
+             "HasNewHandPlantPos" => Self::NewHandplantPosition,
+@@ -178,6 +212,16 @@
+             Self::Bumped => p.bumped, //82BA7310: published acceleration and anim_motion/bumps
+             Self::GrabbingObject => p.grabbing_object, //82BA5700:Offboard304
+             Self::Skitching => p.state == 104, //82BBBC88:State16
++            //82BBBD00: State16 and anim_skitching absorb graph(Ground284) > 0.
++            Self::SkitchingWithAbsorb => {
++                p.state == 104 && p.skitch_absorb_graph.evaluate(p.skitch_absorb) > 0.0
++            }
++            Self::SkitchShimmying { direction } => {
++                //82BBC1A0: mirrored-signed Animation136 against +-0.25.
++                let f = if p.animation_mirrored { -1.0 } else { 1.0 } * p.skitch_hand_speed;
++                let side = if f > 0.25 { 1 } else if f < -0.25 { 2 } else { 0 };
++                side == *direction
++            }
+             Self::IsMovingObject => p.moving_object,
+             Self::EnteringSkitch => {
+                 //82BBBDE0:Ground276,Globals400/layout96
+@@ -213,7 +257,8 @@
+             | Self::Dark
+             | Self::UnderflipRequested
+             | Self::DarkCatchRequested
+-            | Self::CanEnterSlide { .. } => return None,
++            | Self::CanEnterSlide { .. }
++            | Self::SkitchingPosition { .. } => return None,
+         })
+     }
+ 
+@@ -252,6 +297,19 @@
+                     }
+                 }
+             }
++            Self::SkitchingPosition { side } => {
++                //82BBC068: Animation140 hand flags and stance bytes158/157.
++                let (a, b) = host
++                    .physical_stance
++                    .ok_or("SkitchingPosition requires PhysOutAnimation stance bytes")?;
++                let same = a == b;
++                let value = match p.skitch_hand_flags {
++                    1 => if same { 2 } else { 1 },
++                    2 => if same { 1 } else { 2 },
++                    _ => 3,
++                };
++                value == *side
++            }
+             _ => unreachable!("Physical condition handled above"),
+         })
+     }
+--- a/crates/skate-host/src/graph_host/motion_instances.rs
++++ b/crates/skate-host/src/graph_host/motion_instances.rs
+@@ -32,6 +32,7 @@
+     Shove(super::super::motion_shove::ShoveState),
+     SetManualAngle(skate_core::animation::manual::State),
+     HippyJumpAntic(super::super::motion_hippy_jump::State),
++    Skitch(super::super::motion_skitch::State),
+     FingerFlipOut(super::super::motion_finger_flip::State),
+     ///82BB5930 initializes byte8 once per allocated behavior instance.
+     JumpInto { first_update: bool },
+@@ -99,6 +100,11 @@
+                 super::super::motion_stock_gameplay::Operation::HippyJumpAntic,
+             ) => Self::HippyJumpAntic(Default::default()),
+             MotionOperation::StockGameplay(
++                super::super::motion_stock_gameplay::Operation::EnterSkitchingBehaviour
++                | super::super::motion_stock_gameplay::Operation::SkitchingBehaviour
++                | super::super::motion_stock_gameplay::Operation::SkitchShimmyingBehaviour { .. },
++            ) => Self::Skitch(Default::default()),
++            MotionOperation::StockGameplay(
+                 super::super::motion_stock_gameplay::Operation::FingerFlipOut { .. },
+             ) => Self::FingerFlipOut(Default::default()),
+             MotionOperation::StockGameplay(
+diff --git a/crates/skate-host/src/graph_host/motion_skitch.rs b/crates/skate-host/src/graph_host/motion_skitch.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/skate-host/src/graph_host/motion_skitch.rs
+@@ -0,0 +1,179 @@
++//! Skitch MotionGraph behaviours (TU3): EnterSkitchingBehaviour VT82320F10
++//! (Begin82BBC538, Update82BBC5E0), SkitchingBehaviour VT82320ED4 (Begin
++//! 82BBC2D8, Update82BBC390) and SkitchShimmyingBehaviour VT82320F4C (Begin
++//! 82BBC7C8, Update82BBC858, End82BBCAB8). All read the anim_skitching/default
++//! layout and the completed Skitch/Ground physical publication.
++use super::motion_animation::MotionAnimation;
++use skate_core::{
++    animation::{
++        channel_playback::ChannelSettings,
++        playback_parameters::{AttributeSink, SettableAttribute},
++        skeleton_input::name::encode,
++    },
++    point_graph::PointGraph,
++};
++use skate_data::collections::Collections;
++
++const LEFT: &str = "SKCH_2H_SHIMMY_LEFT_CHANNEL"; //830C0010, initializer82F874E8
++const RIGHT: &str = "SKCH_2H_SHIMMY_RIGHT_CHANNEL"; //830BE0DC, initializer82F87500
++
++///anim_skitching/default by layout offset.
++#[derive(Clone, Copy, Debug)]
++pub struct Settings {
++    ///+0 PointNegGraphData8: absorb response.
++    pub absorb: PointGraph<8>,
++    pub reach_min_80: f32,
++    pub shimmy_min_84: f32,
++    pub shimmy_max_88: f32,
++    pub reach_max_96: f32,
++    pub crouch_offset_100: f32,
++}
++impl Settings {
++    pub fn load(d: &Collections) -> Result<Self, String> {
++        let class = "anim_skitching";
++        let f = |name: &str| d.float(class, "default", name);
++        let w = d.words::<20>(class, "default", "Hash_1C04030E5B00A8EA")?.map(f32::from_bits);
++        Ok(Self {
++            absorb: PointGraph { x: w[4..12].try_into().unwrap(), y: w[12..20].try_into().unwrap() },
++            reach_min_80: f("Hash_8738E31E171E2A87")?,
++            shimmy_min_84: f("Hash_B2D3A764E1D86D13")?,
++            shimmy_max_88: f("Hash_F146CFA3B03529A5")?,
++            reach_max_96: f("LongSkitchIntoReachTime")?,
++            crouch_offset_100: f("Hash_6E6EFE7CF9BEF4B8")?,
++        })
++    }
++}
++
++///Completed PhysOut fields the behaviours read (Animation56, Ground32).
++#[derive(Clone, Copy, Debug, Default)]
++pub struct Physical {
++    pub hand_height_132: f32,
++    pub hand_speed_136: f32,
++    pub time_to_skitch_276: f32,
++    pub hand_height_280: f32,
++    pub absorb_284: f32,
++    pub release_speed_308: f32,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Kind {
++    Enter,
++    Skitching,
++    ///Authored `direction`: left1, right2.
++    Shimmy(u32),
++}
++
++#[derive(Clone, Copy, Debug, Default)]
++pub struct State {
++    i8: f32,
++    i12: f32,
++    i16: f32,
++}
++
++fn fsel(test: f32, a: f32, b: f32) -> f32 {
++    if test >= 0.0 { a } else { b }
++}
++fn set(animation: &mut MotionAnimation, name: &[u8], value: f32) {
++    animation.set_attribute(SettableAttribute {
++        name: encode(name),
++        value,
++        normalized: false,
++        sequence_id: -1,
++    });
++}
++
++impl State {
++    pub fn begin(&mut self, kind: Kind, s: &Settings, p: &Physical) {
++        match kind {
++            Kind::Enter => {
++                self.i8 = p.hand_height_132;
++                self.i12 = 0.0;
++                self.i16 = -1.0;
++            }
++            Kind::Skitching => {
++                self.i8 = p.hand_height_132;
++                self.i12 = s.absorb.evaluate(p.absorb_284);
++            }
++            Kind::Shimmy(_) => self.i8 = p.hand_speed_136,
++        }
++    }
++
++    pub fn update(
++        &mut self,
++        kind: Kind,
++        s: &Settings,
++        p: &Physical,
++        animation: &mut MotionAnimation,
++    ) -> Result<(), String> {
++        match kind {
++            Kind::Enter => {
++                let crouch = p.hand_height_280 + s.crouch_offset_100;
++                let time = animation.current_time()?;
++                let mut remaining = animation.current_length()?;
++                let left = 1.0 - time / remaining;
++                if !(left <= 0.0) {
++                    remaining = p.time_to_skitch_276 / left;
++                }
++                let over = remaining - s.reach_min_80;
++                let span = s.reach_max_96 - s.reach_min_80;
++                let over = fsel(-over, 0.0, over);
++                let mut f = fsel(span - over, over, span) / span;
++                if !(self.i16 < 0.0) {
++                    let (lo, hi) = (self.i16 - 0.1, self.i16 + 0.1);
++                    let low = fsel(lo - f, lo, f);
++                    f = fsel(hi - low, low, hi);
++                }
++                self.i16 = f;
++                set(animation, b"Crouch", crouch);
++                set(animation, b"reachspeed", 1.0 - f);
++            }
++            Kind::Skitching => {
++                let crouch = p.hand_height_280 + s.crouch_offset_100;
++                let g = s.absorb.evaluate(p.absorb_284);
++                let (lo, hi) = (self.i12 - 0.04, self.i12 + 0.04);
++                let low = fsel(lo - g, lo, g);
++                self.i12 = fsel(hi - low, low, hi);
++                set(animation, b"Crouch", crouch);
++                set(animation, b"PushSpeed", p.release_speed_308);
++                set(animation, b"absorbspeed", self.i12);
++            }
++            Kind::Shimmy(direction) => {
++                let magnitude = p.hand_speed_136.abs();
++                let m = fsel(s.shimmy_min_84 - magnitude, s.shimmy_min_84, magnitude);
++                let m = fsel(s.shimmy_max_88 - m, m, s.shimmy_max_88);
++                self.i8 = if m > s.shimmy_min_84 {
++                    (m - s.shimmy_min_84) / (s.shimmy_max_88 - s.shimmy_min_84)
++                } else {
++                    0.0
++                };
++                let (play, other) = if direction == 1 { (LEFT, RIGHT) } else { (RIGHT, LEFT) };
++                let has_play = animation.channels.has(play);
++                if animation.channels.has(other) {
++                    animation.channels.end(other);
++                }
++                if !has_play {
++                    animation.new_channel(play, play, ChannelSettings {
++                        priority: 0,
++                        keep_alive: true,
++                        mirrored: false,
++                        speed: 1.0,
++                        blend_in: 0.2,
++                        hold_during_blend_in: false,
++                        blend_out: 0.2,
++                        hold_during_blend_out: false,
++                        use_attributes: false,
++                    })?;
++                }
++                set(animation, b"ShimmySpeed", self.i8);
++            }
++        }
++        Ok(())
++    }
++
++    pub fn end(&mut self, kind: Kind, animation: &mut MotionAnimation) {
++        if let Kind::Shimmy(_) = kind {
++            animation.channels.end_with(LEFT, 0.3, false);
++            animation.channels.end_with(RIGHT, 0.3, false);
++        }
++    }
++}
+--- a/crates/skate-host/src/graph_host/motion_stock_gameplay.rs
++++ b/crates/skate-host/src/graph_host/motion_stock_gameplay.rs
+@@ -149,7 +149,8 @@
+     FingerFlipOut { grab_intent: String },
+     EnterSkitchingBehaviour,
+     SkitchingBehaviour,
+-    SkitchShimmyingBehaviour,
++    ///Factory82BCAF40 binds authored direction: left1, right2.
++    SkitchShimmyingBehaviour { direction: u32 },
+     SetManualAngle { attribute: AttributeName },
+     HippyJumpAntic,
+     LandOnBoard,
+@@ -223,7 +224,13 @@
+             },
+             "EnterSkitchingBehaviour" => Self::EnterSkitchingBehaviour,
+             "SkitchingBehaviour" => Self::SkitchingBehaviour,
+-            "SkitchShimmyingBehaviour" => Self::SkitchShimmyingBehaviour,
++            "SkitchShimmyingBehaviour" => Self::SkitchShimmyingBehaviour {
++                direction: match a.text("direction") {
++                    Some("left") => 1,
++                    Some("right") => 2,
++                    _ => 0,
++                },
++            },
+             "SetManualAngle" => Self::SetManualAngle {
+                 // Factory82BC9678/84 uses literal8231D5C8, no authored override.
+                 attribute: encode(b"manual_angle"),
+--- a/crates/skate-host/src/physics.rs
++++ b/crates/skate-host/src/physics.rs
+@@ -52,6 +52,7 @@
+ mod ground_animation;
+ mod slide_state;
+ mod revert_state;
++mod skitch_state;
+ mod ground_exit;
+ mod ground_phase;
+ mod ground_runtime;
+--- a/crates/skate-host/src/physics/animation_phase.rs
++++ b/crates/skate-host/src/physics/animation_phase.rs
+@@ -147,6 +147,11 @@
+             footplant_contact_time: physical.air.footplant_contact_time_208,
+             time_to_skitch: physical.ground.scalar_276,
+             skitch_transition_time: profile.skitch_transition_time,
++            skitch_hand_flags: physical.animation.word_140,
++            skitch_hand_speed: physical.animation.scalar_136,
++            skitch_absorb: physical.ground.scalar_284,
++            skitch_absorb_graph: profile.skitch_absorb_graph,
++            animation_mirrored: mirrored,
+             time_to_land: physical.air.scalar_184,
+             time_to_land_valid: physical.air.known_air_valid_437 != 0,
+             offboard_trajectory_time: physical.off_board.trajectory_time_120,
+@@ -209,6 +214,14 @@
+     } else {
+         [0.0; 4]
+     };
++    skater.animation.motion.skitch_physical = Some(crate::graph_host::motion_skitch::Physical {
++        hand_height_132: physical.animation.scalar_132,
++        hand_speed_136: physical.animation.scalar_136,
++        time_to_skitch_276: physical.ground.scalar_276,
++        hand_height_280: physical.ground.scalar_280,
++        absorb_284: physical.ground.scalar_284,
++        release_speed_308: physical.ground.scalar_308,
++    });
+     skater.animation.motion.shove_physical = Some(crate::graph_host::motion_shove::ShovePhysical {
+         interaction_trigger,
+         direction,
+--- a/crates/skate-host/src/physics/animation_phase_packet.rs
++++ b/crates/skate-host/src/physics/animation_phase_packet.rs
+@@ -14,6 +14,8 @@
+ pub(crate) struct AnimationProfile {
+     pub maximum_ground_angle_degrees: f32,
+     pub skitch_transition_time: f32,
++    ///anim_skitching layout0 (IsSkitchingWithAbsorb82BBBD00).
++    pub skitch_absorb_graph: skate_core::point_graph::PointGraph<8>,
+     pub truck_tightness: f32,
+     pub wheel_hardness: f32,
+     pub physics_mode: u32,
+@@ -41,6 +43,15 @@
+                 "default",
+                 "LongSkitchIntoReachTime",
+             )?,
++            skitch_absorb_graph: {
++                let w = data
++                    .words::<20>("anim_skitching", "default", "Hash_1C04030E5B00A8EA")?
++                    .map(f32::from_bits);
++                skate_core::point_graph::PointGraph {
++                    x: w[4..12].try_into().unwrap(),
++                    y: w[12..20].try_into().unwrap(),
++                }
++            },
+             //82BA5150 global316/layout1844;8289FB24 binds pushing.
+             maximum_ground_angle_degrees: data.float(
+                 "anim_motion",
+--- a/crates/skate-host/src/physics/biped_ground/grab_runtime.rs
++++ b/crates/skate-host/src/physics/biped_ground/grab_runtime.rs
+@@ -26,6 +26,9 @@
+     pub(crate) flags_12836: u8,
+     query_position: Vector,
+     validation_position: Vector,
++    ///Last published primary record with its authored geometry. Processed
++    ///+1888 keeps only the 288 bytes; Skitch82D2D550 walks the points.
++    published: Option<Record>,
+ }
+ 
+ ///None for a record means clear its publication bit, retaining previous payload.
+@@ -154,6 +157,15 @@
+         Ok(())
+     }
+ 
++    ///Validated records consumed by Ground skitch detection82D39D98.
++    pub(crate) fn validated(&self) -> &[Record] {
++        &self.validated
++    }
++    ///The record published to Processed+1888 at the last PostInput.
++    pub(crate) fn published(&self) -> Option<&Record> {
++        self.published.as_ref()
++    }
++
+     pub(crate) fn best(&self, position: Vector) -> Option<Record> {
+         selection::best(&self.validated, position)
+     }
+@@ -185,6 +197,10 @@
+             self.data_ready[i] = false;
+             record
+         });
++        //None clears only the publication bit; the payload is retained.
++        if let Some(record) = &records[0] {
++            self.published = Some(record.clone());
++        }
+         let object = self.interactable_result.take();
+         if let Some(result) = object {
+             self.interactable_latched = result.is_some();
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -225,6 +225,40 @@
+         let n = built.len();
+         self.physics.world.set_dynamic(built, entities);
+         n
++    }
++    /// SkateV skitching: the grab lines of nearby host vehicles (replaces the
++    /// previous set). Each becomes a LivingWorld vehicle object (provider
++    /// 82C35B98) whose one kind-1 spline is the line; its own dynamic
++    /// triangles (tagged `tag`) are its physical assembly.
++    pub fn set_grab_lines(&mut self, lines: &[GrabLine]) -> Result<(), String> {
++        use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry};
++        use skate_core::player::offboard::grab_scene::registry::{Object, Provider, Spline};
++        let objects = lines
++            .iter()
++            .filter(|l| l.tag != 0)
++            .map(|l| Object {
++                id: l.tag,
++                provider: Provider::Vehicle,
++                disabled: false,
++                assembly_ready: true,
++                assembly: Some(AssemblyData { identity: l.tag, first_part: None }),
++                frame: l.frame,
++                object_vector_128: l.velocity,
++                splines: vec![Spline {
++                    descriptor: Descriptor { kind: 1, id: l.tag },
++                    geometry: std::sync::Arc::new(Geometry {
++                        id: l.tag,
++                        points: l.points.to_vec(),
++                        approach_vectors: vec![l.approach],
++                        word_60: 0,
++                    }),
++                    word_272: 0,
++                }],
++            })
++            .collect();
++        self.physics.offboard_grab_scene =
++            super::offboard::grab_scene::Registry::new(&self.physics.world, objects, Vec::new())?;
++        Ok(())
+     }
+     /// SkateV contact exchange: the moving host entities near the skater,
+     /// sampled by the host (replaces the previous set). Entities without a
+@@ -493,3 +527,15 @@
+ pub mod lifecycle;
+ 
+ pub mod audio;
++
++/// A host vehicle's skitch grab line. `frame` rows are the entity's axes and
++/// position in Skate space (points map as row0*x + row1*y + row2*z + row3);
++/// `points` and `approach` are in the entity's model space.
++#[derive(Clone, Debug)]
++pub struct GrabLine {
++    pub tag: u32,
++    pub frame: [[f32; 4]; 4],
++    pub velocity: [f32; 4],
++    pub points: [[f32; 4]; 2],
++    pub approach: [f32; 4],
++}
+--- a/crates/skate-host/src/physics/frame.rs
++++ b/crates/skate-host/src/physics/frame.rs
+@@ -149,6 +149,7 @@
+     player_state::pre_state(physics, skater)?;
+     match skater.player_state.current() {
+         skate_core::player::state::PhysicalStateId::RevertGround => super::revert_state::update(physics,skater)?,
++        skate_core::player::state::PhysicalStateId::Skitching => super::skitch_state::update(physics,skater)?,
+         skate_core::player::state::PhysicalStateId::HandPlant => super::handplant::update(physics,skater)?,
+         skate_core::player::state::PhysicalStateId::FootPlant => super::footplant::ground::update(physics, skater)?,
+         skate_core::player::state::PhysicalStateId::Boneless => super::boneless::update(physics, skater)?,
+--- a/crates/skate-host/src/physics/ground_phase.rs
++++ b/crates/skate-host/src/physics/ground_phase.rs
+@@ -277,14 +277,15 @@
+             board_correction_pending: &mut skater.skeleton_output.correction.pending,
+             // Original830BD4A0 initializer82F825F0 splats8216DEE0=-1.
+             move_future_deck: &mut move_future,
+-            offboard_grab: &mut skater.offboard_grab,
+         },
+     );
+     // These source writes occur during update. Publish even on a later branch
+     // error so retrying cannot silently erase a completed physical side effect.
+     skater.player_input.processed.vectors_400_416[0] = velocity.map(f32::to_bits);
+     skater.animated_skeleton.roots.predicted_board_position = predicted;
+-    result
++    let outcome = result?;
++    super::skitch_state::ground_query(physics, skater);
++    Ok(outcome)
+ }
+ fn raw(v: [u32; 4]) -> [f32; 4] {
+     v.map(f32::from_bits)
+--- a/crates/skate-host/src/physics/ground_runtime/update.rs
++++ b/crates/skate-host/src/physics/ground_runtime/update.rs
+@@ -35,7 +35,6 @@
+     pub board_correction_pending: &'a mut bool,
+     ///Applies to SkeletonDrives hook432 body and Skeleton16112 together.
+     pub move_future_deck: &'a mut dyn FnMut(Vector3) -> Result<(), String>,
+-    pub offboard_grab: &'a mut super::super::biped_ground::grab_runtime::Owner,
+ }
+ impl GroundState {
+     pub fn update(
+@@ -114,8 +113,9 @@
+         }
+         *targets.board_correction_pending = true;
+         self.state.finish_update(p.timestep_2604);
+-        //82D37F10 calls82D749D0 on the same PlayerGrabSpline owner as offboard.
+-        targets.offboard_grab.invalidate();
++        //82D37F10 tail: GrabWorld held -> skitch query82D39BB8, otherwise
++        //82D749D0 invalidation. Both run in skitch_state::ground_query after
++        //this returns, where the body volumes and ground fields are owned.
+         Ok(outcome)
+     }
+ }
+--- a/crates/skate-host/src/physics/input_phase.rs
++++ b/crates/skate-host/src/physics/input_phase.rs
+@@ -142,6 +142,20 @@
+     physics: &GamePhysics,
+     skater: &mut SkaterRuntime,
+ ) -> Result<(), String> {
++    let target = update_ground_skeleton(physics, skater)?;
++    //Ground82D38000 completes GeneralUpdate;82D38008 then retains the actual
++    //board/animation error used when Air subsequently blends its board target.
++    skater
++        .skeleton_air
++        .capture_physics_error(&physics.board, &target);
++    Ok(())
++}
++
++///82BDF530 alone. Skitch82D477C0 captures its error earlier, in82D4AC38.
++pub(super) fn update_ground_skeleton(
++    physics: &GamePhysics,
++    skater: &mut SkaterRuntime,
++) -> Result<skate_core::physics::skeleton_animation_record::AnimationPartTransform, String> {
+     let collision = collision(skater);
+     let mut owners = SkeletonOwners {
+         animated: &mut skater.animated_skeleton,
+@@ -161,12 +175,7 @@
+         &collision,
+         physics.settings.step.simulation,
+     )?;
+-    //Ground82D38000 completes GeneralUpdate;82D38008 then retains the actual
+-    //board/animation error used when Air subsequently blends its board target.
+-    skater
+-        .skeleton_air
+-        .capture_physics_error(&physics.board, &target);
+-    Ok(())
++    Ok(target)
+ }
+ 
+ pub(super) fn collision(skater: &SkaterRuntime) -> CollisionInput {
+--- a/crates/skate-host/src/physics/offboard/grab_scene/collision.rs
++++ b/crates/skate-host/src/physics/offboard/grab_scene/collision.rs
+@@ -1,5 +1,6 @@
+ //! Actual static scene swept triangles. Assembly identity comes exclusively
+ //! from registered physical associations, never the mesh/triangle numeric ID.
++//! SkateV: dynamic host triangles report their entity tag as the assembly.
+ use super::{Hit, Line, Scene};
+ use skate_core::{
+     math::Vector3,
+@@ -89,10 +90,13 @@
+                 let fraction = if 1.0 - lower >= 0.0 { lower } else { 1.0 };
+                 if fraction < nearest {
+                     nearest = fraction;
+-                    result = Some(Hit {
+-                        fraction,
+-                        assembly: scene.registry.assembly(mesh.geometry),
+-                    });
++                    //SkateV: a moving host entity is its own physical
++                    //assembly (vehicle grab records carry the same tag).
++                    let assembly = scene
++                        .world
++                        .query_entity(index)
++                        .or_else(|| scene.registry.assembly(mesh.geometry));
++                    result = Some(Hit { fraction, assembly });
+                 }
+             }
+         }
+--- a/crates/skate-host/src/physics/player_state/pre_state.rs
++++ b/crates/skate-host/src/physics/player_state/pre_state.rs
+@@ -14,7 +14,7 @@
+             skater.player_state.current(),
+             PhysicalStateId::PhysicsGround
+                 | PhysicalStateId::PhysicsAir
+-                | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround
++                | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround | PhysicalStateId::Skitching
+                 | PhysicalStateId::KnownAir
+                 | PhysicalStateId::BipedAir
+                 | PhysicalStateId::BipedGround
+--- a/crates/skate-host/src/physics/player_state/publication.rs
++++ b/crates/skate-host/src/physics/player_state/publication.rs
+@@ -23,7 +23,7 @@
+             state,
+             PhysicalStateId::PhysicsGround
+                 | PhysicalStateId::PhysicsAir
+-                | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround
++                | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround | PhysicalStateId::Skitching
+                 | PhysicalStateId::KnownAir
+                 | PhysicalStateId::BipedAir
+                 | PhysicalStateId::BipedGround
+@@ -170,6 +170,8 @@
+         physical.state.signed_ground_step_84 = u8::from(output.state_28.flag_84);
+         physical.ground.vector_128 = output.ground_32.anti_flip_torque.map(f32::to_bits);
+         physical.ground.scalar_276 = output.ground_32.time_to_skitch;
++        physical.ground.scalar_280 = output.ground_32.skitch_spline_height;
++        physical.state.counter_36 = output.state_28.grab_spline_type;
+         physical.ground.flag_317 = u8::from(output.ground_32.anti_flip_nudge_present);
+         physical.ground.flag_318 = u8::from(output.ground_32.is_pinning);
+         physical.off_board.flag_304 = u8::from(output.is_grabbing_object_72_304);
+@@ -182,6 +184,12 @@
+         if let Some(value) = air.scalar_184_write {
+             physical.air.scalar_184 = value;
+         }
++    } else if state == PhysicalStateId::Skitching {
++        super::super::skitch_state::fill(
++            &skater.skitch,
++            skater.player_input.toolkit.as_ref(),
++            physical,
++        )?;
+     } else if state == PhysicalStateId::SlideGround {
+         //State Fill82D3B010 is a single byte from this retained Slide owner.
+         physical.state.signed_ground_step_84 = u8::from(skater.slide_state.state.wall_riding);
+--- a/crates/skate-host/src/physics/player_state/registry.rs
++++ b/crates/skate-host/src/physics/player_state/registry.rs
+@@ -31,7 +31,7 @@
+                 PhysicalStateId::Sleeping
+                     | PhysicalStateId::PhysicsGround
+                     | PhysicalStateId::PhysicsAir
+-                    | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround
++                    | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround | PhysicalStateId::Skitching
+                     | PhysicalStateId::KnownAir
+                     | PhysicalStateId::BipedAir
+                     | PhysicalStateId::BipedGround
+@@ -72,7 +72,7 @@
+                 | (
+                     PhysicalStateId::PhysicsGround
+                         | PhysicalStateId::PhysicsAir
+-                        | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround
++                        | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround | PhysicalStateId::Skitching
+                     | PhysicalStateId::KnownAir
+                         | PhysicalStateId::BipedAir
+                         | PhysicalStateId::BipedGround
+@@ -84,7 +84,7 @@
+                         | PhysicalStateId::LandingOnDeck,
+                     PhysicalStateId::PhysicsGround
+                         | PhysicalStateId::PhysicsAir
+-                        | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround
++                        | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround | PhysicalStateId::Skitching
+                     | PhysicalStateId::KnownAir
+                         | PhysicalStateId::BipedAir
+                         | PhysicalStateId::BipedGround
+--- a/crates/skate-host/src/physics/player_state/transition.rs
++++ b/crates/skate-host/src/physics/player_state/transition.rs
+@@ -19,7 +19,7 @@
+                     PhysicalStateId::Sleeping
+                         | PhysicalStateId::PhysicsGround
+                         | PhysicalStateId::PhysicsAir
+-                        | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround
++                        | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround | PhysicalStateId::Skitching
+                         | PhysicalStateId::KnownAir
+                         | PhysicalStateId::BipedAir
+                         | PhysicalStateId::BipedGround
+@@ -40,7 +40,7 @@
+                     call.state.state,
+                     PhysicalStateId::PhysicsGround
+                         | PhysicalStateId::PhysicsAir
+-                        | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround
++                        | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround | PhysicalStateId::Skitching
+                         | PhysicalStateId::KnownAir
+                         | PhysicalStateId::BipedAir
+                         | PhysicalStateId::BipedGround
+@@ -160,6 +160,7 @@
+         PhysicalStateId::HandPlant => skater.handplant.reset(),
+         PhysicalStateId::FootPlant => skater.footplant.reset(), //Exit82D4C5A8
+         PhysicalStateId::Boneless => {}, //empty82D4C9B4
++        PhysicalStateId::Skitching => {} //Exit82B61BB8 is empty.
+         PhysicalStateId::PhysicsGround => super::super::ground_exit::exit(physics, skater),
+         PhysicalStateId::PhysicsAir => super::super::air_phase::exit(skater),
+         PhysicalStateId::KnownAir => {
+@@ -180,6 +181,7 @@
+     }
+     match requested {
+         PhysicalStateId::RevertGround => super::super::revert_state::enter(physics, skater),
++        PhysicalStateId::Skitching => super::super::skitch_state::enter(physics, skater),
+         PhysicalStateId::HandPlant => super::super::handplant::enter(physics, skater),
+         PhysicalStateId::FootPlant => super::super::footplant::ground::enter(physics, skater),
+         PhysicalStateId::Boneless => super::super::boneless::enter(physics, skater),
+--- a/crates/skate-host/src/physics/skater.rs
++++ b/crates/skate-host/src/physics/skater.rs
+@@ -63,6 +63,7 @@
+     pub ground_animation: super::ground_animation::GroundAnimationRuntime,
+     pub ground_animation_settings: super::ground_animation::GroundAnimationSettings,
+     pub revert_state: super::revert_state::RevertState,
++    pub skitch: super::skitch_state::SkitchState,
+     pub slide_state: super::slide_state::SlideState,
+     pub trajectory: super::air_trajectory::AirTrajectoryRuntime,
+     pub grind_camera: super::grind_camera::GrindCamera,
+@@ -270,6 +271,7 @@
+             ground_animation: Default::default(),
+             ground_animation_settings: super::ground_animation::GroundAnimationSettings::load(&data)?,
+             revert_state: super::revert_state::RevertState::load(&data)?,
++            skitch: super::skitch_state::SkitchState::load(&data)?,
+             slide_state: super::slide_state::SlideState::load(&data)?,
+             trajectory,
+             grind_camera: super::grind_camera::GrindCamera::default(),
+diff --git a/crates/skate-host/src/physics/skitch_state.rs b/crates/skate-host/src/physics/skitch_state.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/skate-host/src/physics/skitch_state.rs
+@@ -0,0 +1,462 @@
++//! Skitching104, TU3 vtable82327398: Enter82D47278, Update82D477C0, empty
++//! Exit, PredictFutureOfDeck82D34DA8, Fill82D4C078, Post82D4C070 (the shared
++//! Ground wipeout check). Ground's skitch detection82D39BB8/82D39D98 is here
++//! too because it consumes the same tuning and grab-spline owner.
++use super::{GamePhysics, SkaterRuntime, ground_runtime::GroundInputObservations};
++use skate_core::{
++    math::Vector3,
++    physics::{
++        board_toolkit::BoardToolkit, force_queue::QueuedPointForce, manual::controller,
++        skeleton_animation_record::AnimationPartTransform,
++    },
++    player::{
++        offboard::{
++            grab_scene::{self, Query},
++            ground_query::QueryContext,
++            ground_sync::{BoardLimits, Bounds, skitch_bounds},
++        },
++        skitch::{HandPose, Observations, PullInput, Settings, Skitch},
++    },
++    point_graph::PointGraph,
++    riding::{anti_flip, ground_correction_math, heading, slide_friction, speed_wobble, steering},
++};
++use skate_data::collections::Collections;
++type V = [f32; 4];
++const RADIANS: f32 = f32::from_bits(0x3c8e_fa35);
++
++pub(crate) struct SkitchState {
++    pub settings: Settings,
++    pub skitch: Skitch,
++}
++impl SkitchState {
++    pub fn load(d: &Collections) -> Result<Self, String> {
++        const CLASS: &str = "physics_state_skitching";
++        let float = |name: &str| d.float(CLASS, "default", name);
++        let vector = |name: &str| -> Result<V, String> {
++            Ok(d.words::<4>(CLASS, "default", name)?.map(f32::from_bits))
++        };
++        let graph = |name: &str| -> Result<PointGraph<8>, String> {
++            //PointNegGraphData8: four bounds, then native X/Y arrays.
++            let w = d.words::<20>(CLASS, "default", name)?.map(f32::from_bits);
++            Ok(PointGraph { x: w[4..12].try_into().unwrap(), y: w[12..20].try_into().unwrap() })
++        };
++        let settings = Settings {
++            enter_delay_cc25: float("Hash_CC257F85657759A1")?,
++            reach_margin_6027: float("Hash_60272903AD60FF3B")?,
++            moving_speed_1f85: float("Hash_1F85F500908C5E17")?,
++            speed_filter_1ea5: float("Hash_1EA52A4BDF8964F7")?,
++            fast_speed_30da: float("Hash_30DAD137EE602142")?,
++            excess_speed_466f: graph("Hash_466FC01CF6CA2FD2")?,
++            speed_limit_7fa1: graph("Hash_7FA1FB6630F75C67")?,
++            stick_force_e496: float("Hash_E4965C6A27F1FF96")?,
++            relative_bias_6c62: float("Hash_6C62538D99512F75")?,
++            reach_delay_81a1: float("Hash_81A1FC1E9C2B44D7")?,
++            overrun_time_08fe: float("Hash_08FE14711B1C2BFA")?,
++            reach_cancel_d60a: float("Hash_D60A7AE08B00E714")?,
++            reach_cooldown_44ee: float("Hash_44EE9C498EE7C3C2")?,
++            reach_release_ba19: float("Hash_BA1984761D057860")?,
++            reach_exit_f5f9: float("Hash_F5F9D6CF4D6AC6D1")?,
++            reach_extra_aed1: float("Hash_AED1D7B20DA7CBBA")?,
++            overrun_speed_007c: float("Hash_007CF9EAE1F64C3C")?,
++            settle_speed_1f5f: float("Hash_1F5F8C47EF1C7C97")?,
++            settle_distance_4cc8: float("Hash_4CC8C0D741C121D4")?,
++            chase_distance_8fef: float("Hash_8FEF0AD38542CECD")?,
++            chase_time_cfbb: float("Hash_CFBBDDD08082CF69")?,
++            hand_gain_ff6b: float("Hash_FF6B65AF360C6707")?,
++            hand_step_ea88: float("Hash_EA885312130505B0")?,
++            release_left_low_e2dc: float("Hash_E2DC234CA3A588E9")?,
++            release_right_low_c6c3: float("Hash_C6C3D74A4A964B3D")?,
++            release_left_high_11b7: float("Hash_11B7A22CEE198ED8")?,
++            release_right_high_c505: float("Hash_C50525FE8E95D076")?,
++            arm_reach_eff7: float("Hash_EFF730F7546C6422")?,
++            arm_radius_2c75: float("Hash_2C7533BE2CFAD9B0")?,
++            grab_offset_858d: vector("Hash_858D610290DE4F96")?,
++            pull_graph_00a1: graph("Hash_00A1B0B33F1BA1BF")?,
++            pull_bias_b7a8: float("Hash_B7A817055629EC4B")?,
++            pull_bias_reach_95d9: float("Hash_95D9DE65A73BB685")?,
++            pull_damping_71a8: float("Hash_71A894F6AD65C859")?,
++            turn_rate_0b19: float("Hash_0B199E27AF7B96A8")?,
++            turn_time_3f79: graph("Hash_3F79D445A24E12BA")?,
++            heading_adjust_vs_speed: graph("HeadingAdjustVsSpeed")?,
++            turn_settle_1ff7: graph("Hash_1FF78FAE8AD467FC")?,
++            lean_30fd: graph("Hash_30FDFCE185CD3D4F")?,
++            exit_cooldown_6595: float("Hash_659537728CE30B02")?,
++            release_inner_58b6: float("Hash_58B697CA9FF570E4")?,
++            release_outer_8524: float("Hash_8524E22B25D7D0D7")?,
++            wheel_gap_40aa: float("Hash_40AAD3FD99B464F4")?,
++            wheel_gap_short_f178: float("Hash_F178F963558D24A0")?,
++            airborne_time_03a5: float("Hash_03A59CDFA0B0B967")?,
++            detect_extents_978b: vector("Hash_978B2A7533B6675D")?,
++            detect_offset_8e3c: vector("Hash_8E3C1298E8072745")?,
++            detect_distance_bf43: float("Hash_BF433C58D0F12390")?,
++            detect_time_424a: float("Hash_424A1C69E0076DBB")?,
++        };
++        Ok(Self { settings, skitch: Skitch::default() })
++    }
++}
++
++///PhysicsGround Update82D37C88 tail: GrabWorld (Processed2476 bit22) runs
++///82D39BB8; otherwise82D749D0 cancels the grab-spline owner's queries.
++pub(super) fn ground_query(_physics: &GamePhysics, skater: &mut SkaterRuntime) {
++    let p = &skater.player_input.processed;
++    if p.flags_2476 & 0x40_0000 == 0 {
++        skater.offboard_grab.invalidate();
++        return;
++    }
++    let s = &skater.skitch.settings;
++    let frame = p.effective_anim_transform_192.map(|v| v.map(f32::from_bits));
++    let bounds = skitch_bounds(frame, s.detect_offset_8e3c, s.detect_extents_978b);
++    let position = p.vectors_544_560_592_608[2].map(f32::from_bits);
++    let context = QueryContext {
++        selection_flags_2948: p.actor_query_2948,
++        matching_id_2952: p.actor_query_2952 as i32,
++    };
++    if skater.offboard_grab.flags_12836 & 0x40 != 0 {
++        detect(skater, frame, bounds);
++    }
++    //82D74200: mode255 (vehicles and objects), capacity5, margin0.25 (820991A0).
++    skater.offboard_grab.query(Query {
++        position,
++        sort_position: position,
++        bounds,
++        limits: BoardLimits { margin: 0.25, angle_a: 60.0 * RADIANS, angle_b: 30.0 * RADIANS },
++        mode: 255,
++        capacity: 5,
++        context,
++    });
++}
++
++///82D39D98 over the validated grab-spline records.
++fn detect(skater: &mut SkaterRuntime, frame: [V; 4], bounds: Bounds) {
++    let p = &skater.player_input.processed;
++    let g = &mut skater.ground.state;
++    g.flag_2729 = false;
++    g.word_2560 = 0;
++    g.word_2564 = 0;
++    g.scalar_2668 = 0.0;
++    //Kind2 records use bounds shrunk by0.75 on x/z (821814A0), front face kept.
++    let mut inner = bounds;
++    inner.extents[0] *= 0.75;
++    inner.extents[2] *= 0.75;
++    inner.frame[3] = madd(bounds.frame[2], inner.extents[2] - bounds.extents[2], bounds.frame[3]);
++    let position = p.vectors_544_560_592_608[2].map(f32::from_bits);
++    let board = skater.player_input.toolkit.as_ref().map_or([0.0; 4], |t| t.effective[3]);
++    let velocity = p.vectors_400_416[0].map(f32::from_bits);
++    let limits = BoardLimits { margin: 0.0, angle_a: 60.0 * RADIANS, angle_b: 40.0 * RADIANS };
++    let s = &skater.skitch.settings;
++    let records = skater.offboard_grab.validated().to_vec();
++    for record in records {
++        let [mut a, mut b] = record.endpoints();
++        if 0.0 > dot(sub(b, a), bounds.frame[0]) {
++            std::mem::swap(&mut a, &mut b);
++        }
++        let descriptor = record.descriptor();
++        let box_ = if descriptor.kind == 2 { inner } else { bounds };
++        if !grab_scene::qualify(&record, position, box_, limits) {
++            continue;
++        }
++        if p.ground_timer_2848 > 0.0
++            && (descriptor.kind != 1 || p.skitch_value_2592 == descriptor.id)
++        {
++            continue;
++        }
++        //Where the ordered chord crosses the box's local x=0 plane.
++        let la = local(&box_.frame, a);
++        let lb = local(&box_.frame, b);
++        let t = reciprocal(la[0] - lb[0]) * la[0];
++        let w = madd(sub(lb, la), t, la);
++        let world = madd(box_.frame[2], w[2], madd(box_.frame[1], w[1], madd(box_.frame[0], w[0], box_.frame[3])));
++        g.scalar_2668 = world[1] - board[1];
++        let closing = dot(sub(velocity, record.vector(128)), frame[2]).max(0.5);
++        let time = (dot(sub(world, frame[3]), frame[2]) - s.detect_distance_bf43) * reciprocal(closing);
++        let time = if time >= 0.0 { time } else { 0.0 };
++        g.scalar_2664 = time;
++        skater.offboard_grab.request_primary(descriptor);
++        if time < s.detect_time_424a {
++            g.flag_2729 = true;
++            g.skitch_id_2736 = descriptor.id;
++            g.word_2560 = descriptor.kind;
++            g.word_2564 = descriptor.id;
++            skater.offboard_grab.request_primary(descriptor);
++            skater.skeleton_collision.disable_handplant_contacts(2);
++            return;
++        }
++    }
++}
++
++pub(super) fn enter(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
++    //82D47278: board290=0 and board12+960..988 animation reset, then Init82D47318.
++    physics
++        .board
++        .hook_mut()
++        .drive
++        .disable_animation(&mut skater.ground_lifecycle.board_animated_290);
++    let record = skater
++        .offboard_grab
++        .published()
++        .cloned()
++        .ok_or("Skitch Enter requires the published grab record (Processed1888)")?;
++    let k = &mut skater.skitch;
++    k.skitch.enter(&k.settings, record);
++    bevy::log::info!(tick = physics.ticks, kind = k.skitch.kind_1312,
++        id = format!("{:08x}", k.skitch.id_1316), "SKITCH_ENTER");
++    Ok(())
++}
++
++pub(super) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
++    let p = &skater.player_input.processed;
++    let held = p.flags_2480 & 0x40_0000 != 0;
++    skater.skitch.skitch.begin(held);
++    skater.skeleton_collision.disable_handplant_contacts(5);
++    if skater.skitch.skitch.held() {
++        held_update(physics, skater)?;
++    }
++    let p = &skater.player_input.processed;
++    let t = toolkit(skater)?;
++    let k = &mut skater.skitch;
++    let forces = k.skitch.exit(&k.settings, p.flags_2476 & 0x40_0000 != 0, t.total_mass);
++    for force in forces.into_iter().flatten() {
++        physics.board.forces_mut().append(QueuedPointForce {
++            tag: 6,
++            force_world: xyz(force),
++            point_body: Vector3::ZERO,
++        });
++    }
++    //82D8E5C0 snapshot, Processed528/96 into1136/1200, then82D8C8F0.
++    physics.riding.update_slide_reckoning(
++        p,
++        &t,
++        skater.animation_input.extra.physical_body_spin,
++        skater.animation_input.fields.balance,
++    );
++    super::input_phase::update_ground_skeleton(physics, skater)?;
++    skater.skitch.skitch.finish();
++    if skater.skitch.skitch.flags_1344 & 0x10 != 0 && physics.ticks % 30 == 0 {
++        bevy::log::info!(tick = physics.ticks, phase = skater.skitch.skitch.phase(), "SKITCH_RELEASED");
++    }
++    Ok(())
++}
++
++fn held_update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
++    let record = skater
++        .offboard_grab
++        .published()
++        .cloned()
++        .ok_or("Skitch update requires the published grab record (Processed1888)")?;
++    let p = &skater.player_input.processed;
++    let t = toolkit(skater)?;
++    let f = &skater.animation_input.fields;
++    let observations = Observations {
++        effective_x: t.effective[0],
++        effective_z: t.effective[2],
++        board: t.effective[3],
++        normal: p.vectors_464_480_496_512_528[0].map(f32::from_bits),
++        turn: f.turn,
++        spin: f.spin,
++        wheel_gap: physics.riding.wheel_lines.minimum_distance,
++        airborne_time: physics.riding.ground.time_without_wheel_contact,
++    };
++    let k = &mut skater.skitch;
++    k.skitch.track(&k.settings, record, &observations);
++    //82D4A378: hands are raw animation globals of parts3/7, arms5/9.
++    let mirrored = p.flags_2476 & 4 != 0;
++    let raw = raw_parts(skater)?;
++    let pose = HandPose {
++        hands: [raw[3][3], raw[7][3]],
++        arms: [raw[5][3], raw[9][3]],
++        animation_to_world: skater.animated_skeleton.roots.animation_to_world,
++        world_grab_y: skater.animation_input.extra.world_grab_y,
++        world_grab_z: skater.animation_input.extra.world_grab_z,
++        mirrored,
++    };
++    let k = &mut skater.skitch;
++    let hands = k.skitch.hands(&k.settings, &pose);
++    for (i, hand) in hands.into_iter().enumerate() {
++        if let Some(hand) = hand {
++            let limb = 2 + i;
++            skater.foot_ik.state.external_targets[limb].world_position = hand.world_position;
++            skater.foot_ik.state.limbs[limb].external_target_set = true;
++            skater.foot_ik.state.limbs[limb].target_blend = hand.blend;
++        }
++    }
++    board_forces(physics, skater, raw[0][3][2], mirrored)?;
++    let p = &skater.player_input.processed;
++    let k = &mut skater.skitch;
++    if let Some(rows) = k.skitch.lean(&k.settings, p.flags_2488 & (1 << 23) != 0) {
++        skater.animated_skeleton.board_offset.refresh_orientation(rows);
++    }
++    k.skitch.release_speed(p.flags_2488 & (1 << 29) != 0);
++    k.skitch.brake(skater.animation_input.fields.brake);
++    if let Some(descriptor) = k.skitch.request() {
++        skater.offboard_grab.request_primary(descriptor);
++    }
++    Ok(())
++}
++
++///82D4AC38: physics-error capture, then pull/friction/steering forces.
++fn board_forces(
++    physics: &mut GamePhysics,
++    skater: &mut SkaterRuntime,
++    root_z: f32,
++    mirrored: bool,
++) -> Result<(), String> {
++    let target = skater.animated_skeleton.board_frames.animation_target;
++    skater.skeleton_air.capture_physics_error(&physics.board, &target);
++    let p = &skater.player_input.processed;
++    let t = toolkit(skater)?;
++    let k = &mut skater.skitch;
++    k.skitch.pull_force_816 = [0.0; 4];
++    let airborne = k.skitch.flags_1345 & 0x20 != 0;
++    let settings = skater.ground_settings.board();
++    let input = skater.ground_settings.input(
++        &t,
++        p,
++        &skater.animation_input,
++        &skater.ground.pumping,
++        skater.ground.pumping_settings.mode(p.state_variant_index_2528)?.unintentional_scalar,
++        &physics.riding,
++        &skater.animated_skeleton,
++        physics.settings.step.base_truck_transforms,
++        GroundInputObservations {
++            manual_drag_2724: skater.ground_lifecycle.manual_drag_2724,
++            trajectory_state_bits: p.external_physics_1616.flags,
++            edge_flags: 0,
++            edge_point: [0.0; 4],
++        },
++    );
++    let height =
++        ground_correction_math::center_of_mass_height(skater.animated_skeleton.record.com_to_deck_world);
++    let tilt = |wobble: &mut speed_wobble::SpeedWobbleState| {
++        if airborne {
++            return 0.0;
++        }
++        let tilt = steering::calculate_tilt(settings.steering, input.steering, None, None);
++        let mut w = input.speed_wobble;
++        w.tilt = tilt;
++        w.center_of_mass_height = height;
++        speed_wobble::calculate(wobble, settings.speed_wobble, w)
++    };
++    if k.skitch.phase() == 4 {
++        let value = tilt(&mut skater.ground.wobble);
++        skater.ground.steering.update(value, settings.steering.tilt_blending, p.flags_2468, p.flags_2472);
++        return Ok(());
++    }
++    let pull = k.skitch.pull(&k.settings, PullInput {
++        signed_speed: p.scalar_2612,
++        mass: t.total_mass,
++        root_z,
++        mirrored,
++        world_grab_z: skater.animation_input.extra.world_grab_z,
++    });
++    let mut friction_input = input.slide_friction;
++    friction_input.heading_time = k.skitch.phase_timer_948;
++    let friction = slide_friction::calculate(settings.slide_friction, &friction_input);
++    let steer = k.skitch.steer(&k.settings, t.effective[2]);
++    let value = tilt(&mut skater.ground.wobble);
++    let anti_flip = anti_flip::calculate(settings.anti_flip, &input.anti_flip);
++    skater.ground.steering.update(value, settings.steering.tilt_blending, p.flags_2468, p.flags_2472);
++    let f = &skater.animation_input.fields;
++    if f.balance != 0.0 && f.spin != 0.0 {
++        let target = heading::calculate(settings.heading, &input.heading, &mut skater.ground.heading_previous);
++        skater.ground_runtime.apply_angular_target(&mut physics.board, target);
++    }
++    let mut manual_input = input.manual;
++    manual_input.powersliding = false;
++    let manual = controller::calculate(
++        &mut skater.ground.manual,
++        settings.manual,
++        settings.manual_mode,
++        &manual_input,
++        &mut skater.ground_runtime,
++    )
++    .map_err(|e| format!("Skitch manual: {e:?}"))?;
++    skater.ground_runtime.apply_angular_displacement(&mut physics.board, manual.angular_displacement);
++    skater.ground_runtime.apply_angular_displacement(&mut physics.board, anti_flip);
++    let k = &mut skater.skitch.skitch;
++    if k.flags_1345 & 0x40 != 0 && k.phase() != 4 {
++        skate_core::physics::deck_angular_correction::apply_axis_displacement(
++            &mut physics.board.bodies_mut()[skate_core::physics::board::BodyId::Deck.index()].rates,
++            xyz(steer),
++        );
++    }
++    k.pull_force_816 = pull;
++    physics.board.forces_mut().append(QueuedPointForce {
++        tag: 6,
++        force_world: xyz(pull),
++        point_body: Vector3::ZERO,
++    });
++    physics.board.forces_mut().append(QueuedPointForce {
++        tag: 1,
++        force_world: Vector3::new(friction[0], friction[1], friction[2]),
++        point_body: Vector3::new(friction[4], friction[5], friction[6]),
++    });
++    k.time_992 += f32::from_bits(0x3c88_8889);
++    Ok(())
++}
++
++///Fill82D4C078.
++pub(super) fn fill(
++    state: &SkitchState,
++    toolkit: Option<&BoardToolkit>,
++    physical: &mut skate_core::player::input_phase::PhysicalPlayerInput,
++) -> Result<(), String> {
++    let board_y = toolkit.ok_or("Skitch Fill requires current BoardToolkit")?.effective[3][1];
++    let out = state.skitch.fill(board_y);
++    physical.off_board.flag_304 = u8::from(out.grabbing_304);
++    physical.animation.scalar_132 = out.animation_132;
++    physical.animation.scalar_136 = out.animation_136;
++    physical.animation.word_140 = out.animation_140;
++    physical.ground.scalar_280 = out.ground_280;
++    physical.ground.scalar_284 = out.ground_284;
++    physical.ground.scalar_288 = out.ground_288;
++    physical.ground.scalar_292 = out.ground_292;
++    physical.ground.scalar_308 = out.ground_308;
++    physical.state.counter_36 = out.state_36;
++    physical.state.skitch_value_40 = out.state_40;
++    physical.state.flag_53 = u8::from(out.state_53);
++    Ok(())
++}
++
++///Skeleton14160+64*part: raw animation globals, before physics-frame mapping.
++fn raw_parts(skater: &SkaterRuntime) -> Result<[AnimationPartTransform; 10], String> {
++    let globals = &skater.animation.packet.hierarchy;
++    let indices = &skater.animated_skeleton.bone_indices;
++    let mut out = [[[0.0; 4]; 4]; 10];
++    for (part, slot) in out.iter_mut().enumerate() {
++        *slot = *globals
++            .get(indices[part])
++            .ok_or("Skitch requires the raw animation global of each physics part")?;
++    }
++    Ok(out)
++}
++fn toolkit(skater: &SkaterRuntime) -> Result<BoardToolkit, String> {
++    skater
++        .player_input
++        .toolkit
++        .ok_or_else(|| "Skitch requires current BoardToolkit".into())
++}
++///Bounds-local coordinates: dot with each row after removing the position.
++fn local(frame: &[V; 4], v: V) -> V {
++    let d = sub(v, frame[3]);
++    [dot(d, frame[0]), dot(d, frame[1]), dot(d, frame[2]), 0.0]
++}
++fn dot(a: V, b: V) -> f32 {
++    a[2].mul_add(b[2], a[1].mul_add(b[1], a[0] * b[0]))
++}
++fn sub(a: V, b: V) -> V {
++    std::array::from_fn(|i| a[i] - b[i])
++}
++fn madd(a: V, k: f32, b: V) -> V {
++    std::array::from_fn(|i| a[i].mul_add(k, b[i]))
++}
++///vrefp with two Newton refinements.
++fn reciprocal(v: f32) -> f32 {
++    let mut r = v.recip();
++    for _ in 0..2 {
++        r = r.mul_add((-r).mul_add(v, 1.0), r);
++    }
++    r
++}
++fn xyz(v: V) -> Vector3 {
++    Vector3::new(v[0], v[1], v[2])
++}
+--- a/crates/skate-host/src/physics/wipeout.rs
++++ b/crates/skate-host/src/physics/wipeout.rs
+@@ -123,7 +123,9 @@
+             }
+             Ok(())
+         }
+-        PhysicalStateId::PhysicsGround | PhysicalStateId::SlideGround | PhysicalStateId::RevertGround => {
++        PhysicalStateId::PhysicsGround | PhysicalStateId::SlideGround | PhysicalStateId::RevertGround
++        | PhysicalStateId::Skitching => {
++            //Skitch Post82D4C070 is the same82D8F9E0 Ground check.
+             skater.wipeout.check_ground(&observations)
+         }
+         PhysicalStateId::GroundAnimation => {

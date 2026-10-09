@@ -1,0 +1,17 @@
+[package]
+name = "skate-xma"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "LGPL-2.1-or-later"
+description = "Exact EA-XMA (Skate 3 SNR codec 3) decoder: a port of FFmpeg 4.4's xmaframes/WMA Pro decoder matching the reference xmadec --continuous bit for bit"
+
+[lib]
+name = "skate_xma"
+path = "src/lib.rs"
+
+[[bin]]
+name = "skate-xma"
+path = "src/main.rs"
+
+[dependencies]

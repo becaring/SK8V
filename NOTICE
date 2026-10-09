@@ -1,0 +1,51 @@
+SK8V
+Copyright 2026 becaring
+
+Licensed under the Apache License, Version 2.0 (LICENSE).
+
+SK8V is an unofficial fan project, unaffiliated with EA, Rockstar Games or
+Take-Two Interactive. It contains no GTA V or Skate 3 code or data; players
+convert their own copies. ScriptHookV is not included: it is fetched from
+Alexander Blade's official distribution (dev-c.com) and the ASI links against
+its SDK import library.
+
+Real-time collision detection: credit to Sol4ra. The live GTA collision reader
+(host/src/physics_level.*, rust/skatev-runtime/src/live.rs) is adapted for
+Legacy from Sol4ra's LS-Skate-LiveCollision (GTA V Enhanced), shared with
+SK8V by its author.
+
+This product builds on the following third-party work.
+
+Skate engine (Apache-2.0)
+  2010 Rust Rewrite Mashup, by chasmlol, a fork of IW4L by vladtrc.
+  https://github.com/chasmlol/2010-rust-rewrite-mashup
+  Copyright 2026 vladtrc; Skate engine by chasmlol.
+  Fetched at the commit pinned in upstreams.lock.json; patches/skate/ holds
+  SK8V's modifications to it. Its Skate 3 engine crates (skate-core,
+  skate-data, skate-host, skate-net) are compiled into SkateVRuntime.dll.
+
+Skate 3 HUD and asset pipeline (Apache-2.0 by grant)
+  skate-3-rust-engine HUD modules (apt_vm, apt_display, apt_movie, apt_text,
+  apt_scene, hud_runtime) and asset-pipeline exports, by chasmlol, used under
+  chasmlol's Apache-2.0 grant of 2026-10-07 at commit cb796893.
+  https://github.com/SK8-ENGINE/skate-3-rust-engine
+  rust/skate-hud compiles the HUD modules in place from the fetched upstream
+  (no donor source is copied into this repository); tools/convert-skate-data.py
+  runs the exports during setup. Later revisions of that repository are
+  GPL-3.0 and are used as reference only.
+
+EA-XMA audio decoder (LGPL-2.1-or-later)
+  rust/skate-xma is a port of FFmpeg 4.4's xmaframes / WMA Pro decoder
+  (libavcodec), Copyright the FFmpeg developers, https://ffmpeg.org. It builds
+  the separate program skate-xma.exe and is licensed under the GNU Lesser
+  General Public License 2.1 or later (rust/skate-xma/COPYING.LGPL), not
+  Apache-2.0.
+
+RAGE formats (Unlicense)
+  rage-formats, rpf-archive-rs, rage-cli and rage-render, by VIRUXE, released
+  into the public domain. https://github.com/VIRUXE
+
+Rust crates
+  Each crate linked into a shipped binary keeps its own license; release
+  packages list them with their license texts in THIRD-PARTY-NOTICES.txt
+  (tools/third-party-notices.py).

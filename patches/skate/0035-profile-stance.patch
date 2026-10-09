@@ -1,0 +1,47 @@
+--- a/crates/skate-host/src/skater_animation.rs
++++ b/crates/skate-host/src/skater_animation.rs
+@@ -109,13 +109,21 @@
+     /// regular stance. A profile edit changes the natural basis while retaining
+     /// the current relative stance and trick state.
+     pub(crate) fn set_customisation(&mut self, natural: u32, style: u32) {
++        self.set_natural_stance(natural);
++        // GetCACSettings82590D20..D84: 0=null,1=Loose,2=Gonzo,3=Aggressive.
++        let name: &[u8] = match style { 1 => b"Loose", 2 => b"Gonzo", 3 => b"Aggressive", _ => b"" };
++        self.motion.playback_context.pro_skater = encode(name);
++    }
++    /// The stance half of `set_customisation` (CAC 0 = regular, 1 = goofy):
++    /// SkateV has no profile style to apply, so the style stays as it is.
++    pub(crate) fn set_natural_stance(&mut self, natural: u32) {
+         if natural <= 1 && self.state.publication.natural_stance != natural as i32 {
+             self.state.publication.natural_stance = natural as i32;
+             self.state.flags ^= 0xC000_0000;
+         }
+-        // GetCACSettings82590D20..D84: 0=null,1=Loose,2=Gonzo,3=Aggressive.
+-        let name: &[u8] = match style { 1 => b"Loose", 2 => b"Gonzo", 3 => b"Aggressive", _ => b"" };
+-        self.motion.playback_context.pro_skater = encode(name);
++    }
++    pub fn natural_stance(&self) -> u32 {
++        self.state.publication.natural_stance as u32
+     }
+     pub fn stance(&self) -> (bool, bool) {
+         (self.state.fakie(), self.state.mirrored())
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -140,6 +140,17 @@
+         self.input = ControllerInput::default();
+         Ok(self.pose())
+     }
++    /// SkateV: the player's profile stance, applied as the standalone game
++    /// applies a profile (customiser apply_preferences -> set_customisation).
++    /// 0 = regular, 1 = goofy (the actor's constructed default). Call before
++    /// activation; with A pushing, regular gets Skate's normal push.
++    pub fn set_natural_stance(&mut self, natural: u32) {
++        self.skater.animation.set_natural_stance(natural);
++    }
++    /// (natural stance, animations mirrored).
++    pub fn natural_stance(&self) -> (u32, bool) {
++        (self.skater.animation.natural_stance(), self.skater.animation.stance().1)
++    }
+     pub fn collect(&mut self, frame: InputFrame, dt: f32) {
+         self.input.collect(frame.samples);
+         self.markers.collect_time(f64::from(dt));

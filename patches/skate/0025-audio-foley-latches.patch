@@ -1,0 +1,63 @@
+--- a/crates/skate-host/src/physics/bridge/audio.rs
++++ b/crates/skate-host/src/physics/bridge/audio.rs
+@@ -138,6 +138,23 @@
+     /// deck's relative velocity640 off its normal192 : 0.
+     pub board_slide_speed: f32,
+     pub state_flag_80: bool,
++    /// SkateV: packet827A1B78 sources of game variables 309/320/372/684/
++    /// 688/689/718 (fill824B0DA8). Common ProcessOutput82DB6EC0 copies
++    /// Processed2480 bit18 (OB_Unmounting) and bit8 (KickoutDismount) to
++    /// OffBoard309/310 (packet164 bit0, packet160 bit0).
++    pub unmounting: bool,
++    pub kickout_dismount: bool,
++    /// Skateboard FillPhysOut82C035F0 copies Processed2764 (wheel hardness)
++    /// to Skateboard200; packet148 bit3 is that value < 0.5.
++    pub wheel_hardness: f32,
++    /// Grinds152 (packet152 bit23 when it is 234, kept while it is -1).
++    pub grind_scorable_id: u32,
++    /// Bundle+64 word0 (packet152 bit24 when it is 7).
++    pub filtered_state: u32,
++    /// PhysOutSkeleton602/603 (packet148 bits1/2), see FootIk::hands_over_deck.
++    pub hands_over_deck: [bool; 2],
++    /// OffBoard311 (packet164 bit1), board held.
++    pub holding_board: bool,
+     pub foot_local_velocity: [[f32; 4]; 2],
+ }
+ 
+@@ -301,6 +318,13 @@
+                 } else { 0.0 }
+             },
+             state_flag_80: flags[80 - 52],
++            unmounting: self.skater.player_input.processed.flags_2480 & (1 << 18) != 0,
++            kickout_dismount: self.skater.player_input.processed.flags_2480 & (1 << 8) != 0,
++            wheel_hardness: self.skater.player_input.processed.scalar_2764,
++            grind_scorable_id: p.grinds.scorable_id_152,
++            filtered_state: p.filtered_state_0,
++            hands_over_deck: self.skater.foot_ik.hands_over_deck(),
++            holding_board: p.off_board.flag_311 != 0,
+             //82BF22A0: toe velocities in the physical board's frame.
+             foot_local_velocity: self.skater.foot_physical.output.local_velocity,
+         }
+--- a/crates/skate-host/src/physics/foot_ik.rs
++++ b/crates/skate-host/src/physics/foot_ik.rs
+@@ -110,6 +110,20 @@
+         ]
+     }
+ 
++    ///SkeletonIK FillPhysOut82BF20C8, PhysOutSkeleton602/603: each hand's
++    ///retained deck-space part position (IK1840/1904, limbs 2 and 3) lies
++    ///strictly inside the deck box (IK3168, 0, IK3176) grown by layout32
++    ///IKOffPadding. Native tests Y, X, Z, each as bound > p && p > -bound.
++    pub fn hands_over_deck(&self) -> [bool; 2] {
++        let s = &self.settings;
++        let base = [s.deck_half_width, 0.0, s.deck_total_half_length, 0.0];
++        let bound: [f32; 4] = core::array::from_fn(|i| base[i] + s.blend.hand_outer_padding[i]);
++        [2, 3].map(|limb| {
++            let p = self.state.limbs[limb].part_position;
++            [1, 0, 2].into_iter().all(|i| bound[i] > p[i] && p[i] > -bound[i])
++        })
++    }
++
+     ///Call after native post-physics records/COM/error publication and board
+     ///wobble, before SkeletonOutput::publish replaces the final pose buffers.
+     pub fn post_physics(

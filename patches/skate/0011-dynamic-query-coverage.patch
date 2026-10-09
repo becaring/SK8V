@@ -1,0 +1,449 @@
+diff --git a/crates/skate-host/src/physics/foot_ik_queries.rs b/crates/skate-host/src/physics/foot_ik_queries.rs
+--- a/crates/skate-host/src/physics/foot_ik_queries.rs
++++ b/crates/skate-host/src/physics/foot_ik_queries.rs
+@@ -99,7 +99,7 @@
+         let direction = Vector3::new(end[0] - start[0], end[1] - start[1], end[2] - start[2]);
+         let mut nearest = f32::MAX;
+         let mut position = None;
+-        for (_, triangle) in world.line_candidates(origin, vector(end), radius) {
++        for (_, triangle) in world.scene_line_candidates(origin, vector(end), radius) {
+             let mut geometry = TriangleLineHit {
+                 position: Vector3::ZERO,
+                 normal: Vector3::ZERO,
+diff --git a/crates/skate-host/src/physics/air_trajectory/world.rs b/crates/skate-host/src/physics/air_trajectory/world.rs
+--- a/crates/skate-host/src/physics/air_trajectory/world.rs
++++ b/crates/skate-host/src/physics/air_trajectory/world.rs
+@@ -37,7 +37,7 @@
+     let delta = Vector3::new(end[0] - start.x, end[1] - start.y, end[2] - start.z);
+     let mut nearest = f32::MAX;
+     let mut result = None;
+-    for (index, entry) in world.line_candidates(start, vec3(end), radius) {
++    for (index, entry) in world.scene_line_candidates(start, vec3(end), radius) {
+         let mut hit = TriangleLineHit {
+             position: Vector3::ZERO,
+             normal: Vector3::ZERO,
+@@ -76,7 +76,7 @@
+     let minimum = std::array::from_fn(|i| center[i] - radius);
+     let maximum = std::array::from_fn(|i| center[i] + radius);
+     let mut triangles = Vec::with_capacity(64);
+-    for (_, entry) in world.line_candidates(vec3(center), vec3(center), radius) {
++    for (_, entry) in world.scene_line_candidates(vec3(center), vec3(center), radius) {
+         let vertices = entry.triangle.vertices.map(lanes);
+         if triangle_box(vertices, minimum, maximum) {
+             triangles.push(vertices);
+diff --git a/crates/skate-host/src/physics/offboard/contact_queries.rs b/crates/skate-host/src/physics/offboard/contact_queries.rs
+--- a/crates/skate-host/src/physics/offboard/contact_queries.rs
++++ b/crates/skate-host/src/physics/offboard/contact_queries.rs
+@@ -41,17 +41,18 @@
+         .all(|m| m.local_to_world == RetailAffineTransform::IDENTITY)
+     {
+         world
+-            .line_candidates(start, end, probe.radius)
++            .scene_line_candidates(start, end, probe.radius)
+             .map(|(i, _)| i)
+             .collect()
+     } else {
+-        (0..world.triangles().len()).collect()
++        (0..world.triangles().len() + world.dynamic().len()).collect()
+     };
++    let meshes = world.scene_mesh_candidates(None).map_err(str::to_owned)?;
+     for pool in [QueryPool::Ground, QueryPool::Island, QueryPool::Conditional] {
+         if pool == QueryPool::Conditional && metadata.island_flags != 3 {
+             continue;
+         }
+-        for (mesh_index, mesh) in metadata.meshes.iter().enumerate() {
++        for &(mesh_index, mesh) in &meshes {
+             if mesh.pool != pool
+                 || !(mesh.matching_group == -1 || mesh.matching_group == matching_id as i32)
+             {
+@@ -60,7 +61,7 @@
+             let first = candidates.partition_point(|&i| i < mesh.triangle_range.start);
+             let last = candidates.partition_point(|&i| i < mesh.triangle_range.end);
+             for &index in &candidates[first..last] {
+-                let triangle = &world.triangles()[index].triangle;
++                let triangle = &world.query_triangle(index).triangle;
+                 let frame = mesh.local_to_world;
+                 let vertices = triangle.vertices.map(|v| {
+                     let t = frame.translation;
+@@ -90,7 +91,7 @@
+                 {
+                     nearest = Some(Hit {
+                         geometry,
+-                        packed_surface: metadata.packed_surfaces[index],
++                        packed_surface: world.query_surface(index),
+                         mesh_index,
+                         support_frame: frame,
+                     });
+diff --git a/crates/skate-host/src/physics/player_input/grind/world.rs b/crates/skate-host/src/physics/player_input/grind/world.rs
+--- a/crates/skate-host/src/physics/player_input/grind/world.rs
++++ b/crates/skate-host/src/physics/player_input/grind/world.rs
+@@ -83,13 +83,13 @@
+     }
+     //The index is conservative; native exact gates below remain authoritative.
+     let candidates = world
+-        .candidate_mesh_indices(Some(bounds))
++        .scene_mesh_candidates(Some(bounds))
+         .map_err(str::to_owned)?;
+     //Current BoardWorld applies its stored per-triangle bounds filter after
+     //cluster culling. Collect once in canonical order, then restrict each mesh
+     //to its candidate slice instead of walking its entire triangle range.
+     let triangle_candidates = world
+-        .line_candidates(start, end, probe.radius)
++        .scene_line_candidates(start, end, probe.radius)
+         .collect::<Vec<_>>();
+     let mut nearest = f32::MAX;
+     let mut output = None;
+@@ -98,8 +98,7 @@
+         if pool == QueryPool::Conditional && metadata.island_flags != 3 {
+             continue;
+         }
+-        for &mesh_index in &candidates {
+-            let mesh = &metadata.meshes[mesh_index];
++        for &(_, mesh) in &candidates {
+             if mesh.pool != pool
+                 || !(matching == -1 || mesh.matching_group == -1 || matching == mesh.matching_group)
+                 || !bounds.overlaps(mesh.local_bounds)
+@@ -144,7 +143,7 @@
+                         position: packed(hit.position),
+                         //Decoded volume+16, NOT the rounded leaf's contact normal.
+                         normal: packed(face(vertices)),
+-                        packed_surface: u32::from(metadata.packed_surfaces[triangle_index]),
++                        packed_surface: u32::from(world.query_surface(triangle_index)),
+                     });
+                 }
+             }
+diff --git a/crates/skate-host/src/physics/offboard/contact_toolkit/world.rs b/crates/skate-host/src/physics/offboard/contact_toolkit/world.rs
+--- a/crates/skate-host/src/physics/offboard/contact_toolkit/world.rs
++++ b/crates/skate-host/src/physics/offboard/contact_toolkit/world.rs
+@@ -169,11 +169,10 @@
+             .line_candidate_bounds(start, vec3(probe.end), probe.radius);
+         let candidates: Vec<_> = self
+             .world
+-            .line_candidates(start, vec3(probe.end), probe.radius)
++            .scene_line_candidates(start, vec3(probe.end), probe.radius)
+             .map(|(index, _)| index)
+             .collect();
+-        for mesh_index in self.world.candidate_mesh_indices(bounds)? {
+-            let mesh = &self.metadata.meshes[mesh_index];
++        for (_, mesh) in self.world.scene_mesh_candidates(bounds)? {
+             if mesh.pool != pool
+                 || !matches(group, mesh.matching_group)
+                 || mesh.rejection_flags & reject != 0
+@@ -183,7 +182,7 @@
+             let first = candidates.partition_point(|&i| i < mesh.triangle_range.start);
+             let last = candidates.partition_point(|&i| i < mesh.triangle_range.end);
+             for &index in &candidates[first..last] {
+-                let vertices = self.world.triangles()[index].triangle.vertices;
++                let vertices = self.world.query_triangle(index).triangle.vertices;
+                 let mut hit = TriangleLineHit {
+                     position: Vector3::ZERO,
+                     normal: Vector3::ZERO,
+@@ -206,7 +205,7 @@
+                         position: lanes(hit.position),
+                         normal: face(vertices.map(lanes)),
+                         fraction,
+-                        surface: self.metadata.packed_surfaces[index],
++                        surface: self.world.query_surface(index),
+                         geometry: mesh.geometry,
+                         mesh_frame: [
+                             vector4(transform.basis.columns[0]),
+@@ -234,18 +233,17 @@
+             .line_candidate_bounds(vec3(center), vec3(center), radius);
+         let candidates: Vec<_> = self
+             .world
+-            .line_candidates(vec3(center), vec3(center), radius)
++            .scene_line_candidates(vec3(center), vec3(center), radius)
+             .map(|(index, _)| index)
+             .collect();
+-        for mesh_index in self.world.candidate_mesh_indices(bounds)? {
+-            let mesh = &self.metadata.meshes[mesh_index];
++        for (_, mesh) in self.world.scene_mesh_candidates(bounds)? {
+             if mesh.pool != pool || !matches(group, mesh.matching_group) {
+                 continue;
+             }
+             let first = candidates.partition_point(|&i| i < mesh.triangle_range.start);
+             let last = candidates.partition_point(|&i| i < mesh.triangle_range.end);
+             for &index in &candidates[first..last] {
+-                let vertices = self.world.triangles()[index].triangle.vertices.map(lanes);
++                let vertices = self.world.query_triangle(index).triangle.vertices.map(lanes);
+                 if triangle_box(vertices, center, radius) {
+                     output.push(vertices);
+                     if output.len() == 64 {
+@@ -390,3 +388,38 @@
+     }
+     !separated(cross(edges[0], edges[1]))
+ }
++
++pub(crate) mod skatev_dynamic_tests {
++    use super::*;
++    use skate_core::physics::{board_world::WorldTriangle, contact::RetailContactMaterial};
++    use skate_core::player::offboard::ground_query::{GroundQueryPacket, GroundQueryScene, Line, QueryContext};
++
++    pub(crate) fn moving_entity_is_visible_to_biped_ground_air_and_support_queries() {
++        let mut world = BoardWorld::with_query_metadata(vec![], QueryMetadata {
++            packed_surfaces: vec![], meshes: vec![], static_edges: vec![], island_flags: 0,
++        }).unwrap();
++        let t = WorldTriangle::from_vertices([
++            Vector3::new(-5., 1., -5.), Vector3::new(-5., 1., 5.), Vector3::new(5., 1., -5.),
++        ], RetailContactMaterial { static_friction: 0.5, dynamic_friction: 0.5, restitution: 0. },
++            0, 0x1e1, [-1.; 3], 0.).unwrap();
++        world.set_dynamic(vec![t], vec![0xA1234567]);
++        let line = Line { start: Vector3::new(-1., 3., -1.), end: Vector3::new(-1., -1., -1.), radius: 0. };
++        assert!(world.query_swept_line(line.start, line.end, 0.).unwrap().is_some(), "board sees the entity");
++        let air = StaticScene::new(&world).unwrap().lines(&[line], -1).unwrap();
++        assert_eq!(air[0].as_ref().map(|h| h.packed_surface), Some(0), "off-board air must see it too; entity tag is not a surface");
++        let packet = GroundQueryPacket {
++            context: QueryContext { selection_flags_2948: 0, matching_id_2952: -1 },
++            center: Vector3::ZERO, up: Vector3::new(0., 1., 0.), tangent: Vector3::new(0., 0., 1.), lines: [line; 7],
++        };
++        use crate::physics::offboard::ground_query::{with_world_scene, PrimaryEdges};
++        let ground = with_world_scene(&world, PrimaryEdges::Normal { dynamic: &[], vehicles: &[] }, &[],
++            |scene| scene.query_lines(&packet)).unwrap();
++        assert!(ground.iter().all(Option::is_some), "walking probes must see the same moving geometry");
++        let support = crate::physics::offboard::contact_queries::query(&world,
++            crate::physics::offboard::contact_queries::Probe { start: lanes(line.start), end: lanes(line.end), radius: 0. }, 7).unwrap();
++        assert!(support.is_some(), "biped support must not fall through the entity");
++        assert!(!StaticScene::new(&world).unwrap().nearby(QueryPool::Ground, [-1., 1., -1., 0.], 0.5, -1).unwrap().is_empty());
++        world.set_dynamic(vec![], vec![]);
++        assert!(StaticScene::new(&world).unwrap().lines(&[line], -1).unwrap()[0].is_none(), "removed entities leave no ghost collider");
++    }
++}
+diff --git a/crates/skate-host/src/physics/offboard/grab_scene/collision.rs b/crates/skate-host/src/physics/offboard/grab_scene/collision.rs
+--- a/crates/skate-host/src/physics/offboard/grab_scene/collision.rs
++++ b/crates/skate-host/src/physics/offboard/grab_scene/collision.rs
+@@ -32,11 +32,11 @@
+         .line_candidate_bounds(xyz(line.start), xyz(line.end), line.radius);
+     let meshes = scene
+         .world
+-        .candidate_mesh_indices(bounds)
++        .scene_mesh_candidates(bounds)
+         .map_err(str::to_owned)?;
+     let candidates: Vec<_> = scene
+         .world
+-        .line_candidates(xyz(line.start), xyz(line.end), line.radius)
++        .scene_line_candidates(xyz(line.start), xyz(line.end), line.radius)
+         .map(|(index, _)| index)
+         .collect();
+     let mut nearest = f32::MAX;
+@@ -52,8 +52,7 @@
+         if pool == QueryPool::Conditional && metadata.island_flags != 3 {
+             continue;
+         }
+-        for &mesh_index in &meshes {
+-            let mesh = &metadata.meshes[mesh_index];
++        for &(_, mesh) in &meshes {
+             if mesh.pool != pool
+                 || mesh.rejection_flags & line.reject_flags != 0
+                 || !(line.group == -1
+@@ -71,7 +70,7 @@
+                     fraction: 0.0,
+                     volume_parameter: [0.; 3],
+                 };
+-                let vertices = scene.world.triangles()[index].triangle.vertices;
++                let vertices = scene.world.query_triangle(index).triangle.vertices;
+                 if !triangle_segment(
+                     &mut hit,
+                     xyz(line.start),
+diff --git a/crates/skate-host/src/physics/offboard/ground_query/world.rs b/crates/skate-host/src/physics/offboard/ground_query/world.rs
+--- a/crates/skate-host/src/physics/offboard/ground_query/world.rs
++++ b/crates/skate-host/src/physics/offboard/ground_query/world.rs
+@@ -28,7 +28,6 @@
+         packet: &GroundQueryPacket,
+     ) -> Result<[Option<LineHit>; 7], Self::Error> {
+         let metadata = self.world.query_metadata()?;
+-        let triangles = self.world.triangles();
+         let mut candidates = Vec::new();
+         for line in &packet.lines {
+             if !line.radius.is_finite() || line.radius < 0. {
+@@ -36,18 +35,17 @@
+             }
+             candidates.extend(
+                 self.world
+-                    .candidate_mesh_indices(self.world.line_candidate_bounds(
++                    .scene_mesh_candidates(self.world.line_candidate_bounds(
+                         line.start,
+                         line.end,
+                         line.radius,
+                     ))?,
+             );
+         }
+-        candidates.sort_unstable();
+-        candidates.dedup();
++        candidates.sort_unstable_by_key(|(i, _)| *i);
++        candidates.dedup_by_key(|(i, _)| *i);
+         let mut pools: [Vec<Mesh<'_>>; 3] = std::array::from_fn(|_| Vec::new());
+-        for index in candidates {
+-            let source = &metadata.meshes[index];
++        for (_, source) in candidates {
+             let pool = match source.pool {
+                 QueryPool::Ground => 0,
+                 QueryPool::Island => 1,
+@@ -61,8 +59,8 @@
+                     max: source.local_bounds.max,
+                 },
+                 matching_group: source.matching_group,
+-                triangles: &triangles[source.triangle_range.clone()],
+-                surfaces: &metadata.packed_surfaces[source.triangle_range.clone()],
++                triangles: self.world.query_triangles(source.triangle_range.clone()),
++                surfaces: self.world.query_surfaces(source.triangle_range.clone()),
+             });
+         }
+         super::lines::query_pools(
+diff --git a/crates/skate-core/src/physics/board_world.rs b/crates/skate-core/src/physics/board_world.rs
+--- a/crates/skate-core/src/physics/board_world.rs
++++ b/crates/skate-core/src/physics/board_world.rs
+@@ -4,6 +4,7 @@
+ //! determine the physical result, in world-triangle then moving-volume order.
+ mod broadphase;
+ mod query_index;
++mod dynamic_queries;
+ pub mod query_metadata;
+ use crate::math::Vector3;
+ use broadphase::{conservative_bounds, primitive_bounds};
+@@ -116,6 +117,8 @@
+     // SkateV: host-supplied moving geometry, queried after the static world.
+     dynamic: Vec<WorldTriangle>,
+     dynamic_bounds: Vec<Bounds>,
++    dynamic_mesh: Option<query_metadata::QueryMesh>,
++    dynamic_surfaces: Vec<u16>,
+     // Host entity per dynamic triangle. Kept apart from the triangle tag,
+     // which Skate reads as the packed surface ID (wheel surface vote).
+     dynamic_entities: Vec<u32>,
+@@ -165,6 +168,8 @@
+             contacts: Vec::new(),
+             dynamic: Vec::new(),
+             dynamic_bounds: Vec::new(),
++            dynamic_mesh: None,
++            dynamic_surfaces: Vec::new(),
+             dynamic_entities: Vec::new(),
+             dynamic_hits: Vec::new(),
+             buffer: ContactBuffer {
+@@ -221,6 +226,7 @@
+         self.dynamic_entities = entities;
+         self.dynamic_entities.resize(self.dynamic.len(), 0);
+         self.dynamic_hits.clear();
++        self.refresh_dynamic_query_metadata();
+     }
+ 
+     pub fn dynamic(&self) -> &[WorldTriangle] {
+@@ -380,9 +386,10 @@
+         for &index in &candidates {
+             let entry = &triangles[index];
+             for (volume, volume_bounds) in volumes.iter().zip(&volume_bounds) {
+-                if self.query_metadata.is_some()
+-                    && volume_bounds.is_some_and(|b| !self.triangle_bounds[index].overlaps(b))
+-                {
++                // Canonical metadata selects clusters, not narrow-phase validity.
++                // Apply the same conservative pair bounds to unindexed worlds:
++                // the recovered predictor assumes a nearby triangle candidate.
++                if volume_bounds.is_some_and(|b| !self.triangle_bounds[index].overlaps(b)) {
+                     continue;
+                 }
+                 let Some(manifold) = primitive_triangle_world_contacts(
+diff --git a/crates/skate-core/src/physics/board_world/dynamic_queries.rs b/crates/skate-core/src/physics/board_world/dynamic_queries.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/skate-core/src/physics/board_world/dynamic_queries.rs
+@@ -0,0 +1,75 @@
++//! SkateV's moving-geometry view for every scene adapter. Static hierarchy,
++//! ordering, groups and surfaces remain unchanged. Dynamic entities are
++//! world-space kinematic geometry; host handles never become surface codes
++//! or Skate body indices.
++use super::{BoardWorld, WorldTriangle};
++use super::query_metadata::{Bounds, QueryMesh, QueryPool};
++use crate::{math::Vector3, physics::drive_frames::RetailAffineTransform};
++use std::ops::Range;
++
++impl BoardWorld {
++    pub(super) fn refresh_dynamic_query_metadata(&mut self) {
++        self.dynamic_surfaces.clear();
++        self.dynamic_surfaces.resize(self.dynamic.len(), 0);
++        self.dynamic_mesh = Bounds::from_points(self.dynamic_bounds.iter().flat_map(|b| [b.min, b.max]))
++            .map(|bounds| QueryMesh {
++                triangle_range: self.triangles.len()..self.triangles.len() + self.dynamic.len(),
++                local_to_world: RetailAffineTransform::IDENTITY,
++                world_to_local: RetailAffineTransform::IDENTITY,
++                local_bounds: bounds,
++                matching_group: -1,
++                rejection_flags: 0,
++                geometry: 0,
++                pool: QueryPool::Ground,
++            });
++    }
++
++    /// Static candidates first, moving entities second, in stable supplied order.
++    /// Indices in the second segment are only valid through query_triangle(s).
++    pub fn scene_line_candidates(&self, start: Vector3, end: Vector3, radius: f32)
++        -> impl Iterator<Item = (usize, &WorldTriangle)>
++    {
++        let bounds = self.line_candidate_bounds(start, end, radius);
++        let moving = self.dynamic.iter().zip(&self.dynamic_bounds).enumerate()
++            .filter(move |(_, (_, b))| bounds.is_none_or(|a| a.overlaps(b.expanded(1e-3))))
++            .map(|(i, (t, _))| (self.triangles.len() + i, t));
++        self.line_candidates(start, end, radius).chain(moving)
++    }
++
++    pub fn scene_mesh_candidates(&self, bounds: Option<Bounds>)
++        -> Result<Vec<(usize, &QueryMesh)>, &'static str>
++    {
++        let metadata = self.query_metadata()?;
++        let mut meshes: Vec<_> = self.candidate_mesh_indices(bounds)?.into_iter()
++            .map(|i| (i, &metadata.meshes[i])).collect();
++        if let Some(mesh) = &self.dynamic_mesh {
++            if bounds.is_none_or(|b| b.overlaps(mesh.local_bounds.expanded(1e-3))) {
++                meshes.push((metadata.meshes.len(), mesh));
++            }
++        }
++        Ok(meshes)
++    }
++
++    pub fn query_triangle(&self, index: usize) -> &WorldTriangle {
++        if index < self.triangles.len() { &self.triangles[index] }
++        else { &self.dynamic[index - self.triangles.len()] }
++    }
++
++    /// Ranges come from scene_mesh_candidates and never span both segments.
++    pub fn query_triangles(&self, range: Range<usize>) -> &[WorldTriangle] {
++        if range.start < self.triangles.len() { &self.triangles[range] }
++        else { &self.dynamic[range.start - self.triangles.len()..range.end - self.triangles.len()] }
++    }
++
++    pub fn query_surfaces(&self, range: Range<usize>) -> &[u16] {
++        if range.start < self.triangles.len() {
++            &self.query_metadata.as_ref().expect("scene metadata validated by caller").packed_surfaces[range]
++        } else {
++            &self.dynamic_surfaces[range.start - self.triangles.len()..range.end - self.triangles.len()]
++        }
++    }
++
++    pub fn query_surface(&self, index: usize) -> u16 {
++        self.query_surfaces(index..index + 1)[0]
++    }
++}
+diff --git a/crates/skate-host/src/physics/offboard/contact_toolkit.rs b/crates/skate-host/src/physics/offboard/contact_toolkit.rs
+--- a/crates/skate-host/src/physics/offboard/contact_toolkit.rs
++++ b/crates/skate-host/src/physics/offboard/contact_toolkit.rs
+@@ -4,3 +4,7 @@
+ mod world;
+ pub use skate_core::player::offboard::contact_toolkit::Owner;
+ pub use world::StaticScene;
++/// HOST-only diagnostic invoked by the project collision acceptance harness.
++pub(crate) fn verify_dynamic_queries() {
++    world::skatev_dynamic_tests::moving_entity_is_visible_to_biped_ground_air_and_support_queries();
++}
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -5,6 +5,12 @@
+ use skate_data::skate_map::{Collision, Geometry, Rail, SkateMap};
+ use std::path::Path;
+ pub mod hud;
++
++/// Synthetic HOST regression for the shared moving-entity query boundary.
++/// Does not load retail assets or alter a live session.
++pub fn verify_dynamic_queries() {
++    super::offboard::contact_toolkit::verify_dynamic_queries();
++}
+ 
+ #[derive(Clone, Copy, Default)]
+ pub struct Controls {

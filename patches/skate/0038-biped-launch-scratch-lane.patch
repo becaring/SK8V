@@ -1,0 +1,96 @@
+--- a/crates/skate-core/src/player/offboard/air_launch.rs
++++ b/crates/skate-core/src/player/offboard/air_launch.rs
+@@ -87,7 +87,10 @@
+         (state.frame_output.frame[1], "Nonfinite BipedAir launch input biped frame up"),
+         (state.motion.frame_0[1], "Nonfinite BipedAir launch input motion frame up"),
+     ] {
+-        if value.iter().any(|x| !x.is_finite()) {
++        // Lane 3 is SIMD scratch (the biped controller carries -inf there on
++        // steep slopes; owner runs 2026-10-03/04), as the current engine's
++        // packet check treats it.
++        if !math::xyz_finite(value) {
+             return Err(name);
+         }
+     }
+@@ -164,7 +167,7 @@
+         2 | 6 => {}
+         _ => unreachable!("mode returns only the seven native cases"),
+     }
+-    if velocity.iter().chain(secondary.iter()).any(|x| !x.is_finite()) {
++    if !math::xyz_finite(velocity) || !math::xyz_finite(secondary) {
+         // SkateV diagnostic: the mode's own arithmetic produced it.
+         return Err(match selected_mode {
+             0 => "Nonfinite BipedAir launch from mode0 (ground)",
+--- a/crates/skate-core/src/player/offboard/air_launch/math.rs
++++ b/crates/skate-core/src/player/offboard/air_launch/math.rs
+@@ -15,6 +15,19 @@
+     v[1] = 0.0;
+     v
+ }
++pub(in crate::player::offboard) fn xyz_finite(v: Vector) -> bool {
++    v[..3].iter().all(|x| x.is_finite())
++}
++/// Preserve finite packed lanes; drop non-finite SIMD scratch in lane 3.
++pub(in crate::player::offboard) fn sanitize_w_lane(v: Vector) -> Vector {
++    if v[3].is_finite() {
++        v
++    } else {
++        let mut v = v;
++        v[3] = 0.0;
++        v
++    }
++}
+ pub(in crate::player::offboard) fn magnitude(q: f32) -> f32 {
+     let value = q * crate::physics::board_motion_output::inverse_length_squared(q, 2);
+     if q == 0.0 { 0.0 } else { value }
+--- a/crates/skate-core/src/player/offboard/air_launch/tests.rs
++++ b/crates/skate-core/src/player/offboard/air_launch/tests.rs
+@@ -369,3 +369,13 @@
+         assert!((rotated[2] - (-v[0] * s + v[2] * c)).abs() < 1e-6);
+     }
+ }
++#[test]
++fn biped_velocity_scratch_lane_does_not_block_the_launch() {
++    //SkateV: the biped controller carries -inf in lane 3 on steep slopes
++    //(owner runs 2026-10-03/04: "Nonfinite BipedAir launch input velocity912").
++    let mut p = processed();
++    p.velocity_608 = [0., 0., 1.876, 0.];
++    p.velocity_912 = [4., 20., 8., f32::NEG_INFINITY];
++    let packet = run(p);
++    assert!(packet.velocity_0[..3].iter().all(|x| x.is_finite()));
++}
+--- a/crates/skate-core/src/player/offboard/air_selector/candidates.rs
++++ b/crates/skate-core/src/player/offboard/air_selector/candidates.rs
+@@ -1,11 +1,23 @@
+ //!82D6BF90; S2 82DBB358 verifies packet/index-shift roles, not S3's new cone.
+ use super::{Candidate, DT, MAX_CANDIDATES, Packet, Settings, Vector, math::*};
++use crate::player::offboard::air_launch::math::{sanitize_w_lane, xyz_finite};
+ use crate::air::trajectory::Trajectory;
++fn sanitize_packet(mut p: Packet) -> Packet {
++    p.velocity_0 = sanitize_w_lane(p.velocity_0);
++    p.secondary_velocity_16 = sanitize_w_lane(p.secondary_velocity_16);
++    p.position_32 = sanitize_w_lane(p.position_32);
++    p.up_48 = sanitize_w_lane(p.up_48);
++    p.forward_64 = sanitize_w_lane(p.forward_64);
++    p.board_position_80 = sanitize_w_lane(p.board_position_80);
++    p
++}
+ pub(super) fn prepare(
+     p: Packet,
+     gravity: Vector,
+     s: Settings,
+ ) -> Result<(Vec<Candidate>, Vector, Vector), &'static str> {
++    let p = sanitize_packet(p);
++    let gravity = sanitize_w_lane(gravity);
+     let count = p
+         .kind_108
+         .checked_add(p.kind_112)
+@@ -34,7 +46,7 @@
+         (p.board_position_80, "Nonfinite BipedAir launch packet: board_position80"),
+         (gravity, "Nonfinite BipedAir launch packet: gravity"),
+     ] {
+-        if value.iter().any(|x| !x.is_finite()) {
++        if !xyz_finite(value) {
+             return Err(name);
+         }
+     }

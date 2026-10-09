@@ -1,0 +1,231 @@
+diff --git a/crates/skate-host/src/skater_animation.rs b/crates/skate-host/src/skater_animation.rs
+--- a/crates/skate-host/src/skater_animation.rs
++++ b/crates/skate-host/src/skater_animation.rs
+@@ -253,6 +253,9 @@
+             .animation
+             .skater_animation_flags
+             .ok_or("MotionGraph lost the SkaterAnim flag owner")?;
++        if let Some(frames) = self.motion.animation.clip_revert_request.take() {
++            self.state.publication.air_dismount_revert_frames = frames;
++        }
+         self.state.publication.relative_stance = self.motion.animation.relative_stance as i32;
+         if std::mem::take(&mut self.motion.animation.reset_action_intents) {
+             self.action.action_intents.clear();
+diff --git a/crates/skate-host/src/graph_host/mod.rs b/crates/skate-host/src/graph_host/mod.rs
+--- a/crates/skate-host/src/graph_host/mod.rs
++++ b/crates/skate-host/src/graph_host/mod.rs
+@@ -13,6 +13,7 @@
+ pub mod motion;
+ mod motion_air_leg;
+ mod motion_animation;
++mod clip_marker_latch;
+ pub(crate) mod motion_grind;
+ mod motion_channels;
+ pub(crate) mod motion_character_gesture;
+diff --git a/crates/skate-host/src/graph_host/motion_animation.rs b/crates/skate-host/src/graph_host/motion_animation.rs
+--- a/crates/skate-host/src/graph_host/motion_animation.rs
++++ b/crates/skate-host/src/graph_host/motion_animation.rs
+@@ -34,6 +34,7 @@
+     ///Actual fullSkaterAnim15180 flags. AddBindPose consumes bits22/21 on
+     ///construction; the owner publishes the updated flags back to the actor.
+     pub skater_animation_flags: Option<u32>,
++    pub clip_revert_request: Option<i32>,
+     /// SkaterAnim15188/15196/15200 at the graph publication boundary.
+     pub natural_stance: u32,
+     pub relative_stance: u32,
+@@ -101,6 +102,7 @@
+             posture: PendingPosture::default(),
+             posture_bank_valid: false,
+             skater_animation_flags: None,
++            clip_revert_request: None,
+             natural_stance: 1,
+             relative_stance: 0,
+             requested_stance: 0,
+diff --git a/crates/skate-host/src/graph_host/motion_execute_leaf.rs b/crates/skate-host/src/graph_host/motion_execute_leaf.rs
+--- a/crates/skate-host/src/graph_host/motion_execute_leaf.rs
++++ b/crates/skate-host/src/graph_host/motion_execute_leaf.rs
+@@ -10,6 +10,20 @@
+     let instance = host.instances.get_mut(behavior)
+         .ok_or("Unallocated MotionGraph behavior")?;
+     match (operation, instance) {
++            (MotionOperation::StockGameplay(super::super::motion_stock_gameplay::Operation::AirDismounting), Instance::ClipRevert(latch)) => {
++                let clock = if phase == 0 {
++                    Some((host.animation.current_length()?, host.animation.current_time()?))
++                } else { None };
++                // Owned Update82BB94C0 queries tree membership, irrespective of
++                // marker payload; v84/82B971C0 stores count and sets flag20.
++                let marker = phase == 1 && host.animation.tree_attributes()
++                    .iter().any(|attribute| attribute.name == encode(b"airdismountrevert"));
++                if let Some(frames) = latch.step(phase, clock, marker)? {
++                    *host.animation.skater_animation_flags.as_mut()
++                        .ok_or("clip revert requires the live animation flags")? |= 0x0010_0000;
++                    host.animation.clip_revert_request = Some(frames);
++                }
++            }
+             (MotionOperation::BipedCadence, _) => {
+                 if phase == 1 {
+                     crate::graph_host::motion_offboard_cadence::biped_cadence(
+diff --git a/crates/skate-host/src/graph_host/motion_instances.rs b/crates/skate-host/src/graph_host/motion_instances.rs
+--- a/crates/skate-host/src/graph_host/motion_instances.rs
++++ b/crates/skate-host/src/graph_host/motion_instances.rs
+@@ -4,6 +4,7 @@
+     Grind(super::super::motion_grind::State),
+     Trick(i32),
+     Stateless,
++    ClipRevert(super::super::clip_marker_latch::ClipMarkerLatch),
+     MatchCadence(super::super::motion_offboard_cadence::MatchCadence),
+     ToggleBoard(skate_core::player::offboard::toggle_board::State),
+     Runout(super::super::motion_runout::State),
+@@ -64,6 +65,7 @@
+             MotionOperation::Pumping => {
+                 Self::Pumping(skate_core::animation::pumping_channel::State::default())
+             }
++            MotionOperation::StockGameplay(super::super::motion_stock_gameplay::Operation::AirDismounting) => Self::ClipRevert(Default::default()),
+             MotionOperation::BipedCadence => Self::Stateless,
+             MotionOperation::MatchCadence => Self::MatchCadence(Default::default()),
+             MotionOperation::OffboardBodyTweakBlend(_) => Self::OffboardBodyTweak(Default::default()),
+diff --git a/crates/skate-host/src/physics/biped_ground.rs b/crates/skate-host/src/physics/biped_ground.rs
+--- a/crates/skate-host/src/physics/biped_ground.rs
++++ b/crates/skate-host/src/physics/biped_ground.rs
+@@ -142,8 +142,8 @@
+         .map(|v| v.map(f32::from_bits));
+     skater.biped_ground.enter(
+         ground_entry::Input {
+-            animation_frame: frame,
+-            processed_velocity_608: p.vectors_544_560_592_608[3].map(f32::from_bits),
++            animation_frame: geometric_frame(frame),
++            processed_velocity_608: geometric_vector(p.vectors_544_560_592_608[3].map(f32::from_bits)),
+             processed_flags_2484: p.flags_2484,
+             processed_flags_2476: p.flags_2476,
+             requested_angle_2936: skater.animation_input.extra.biped_start_angle,
+@@ -151,7 +151,7 @@
+             previous_state_2504: p.state_2504,
+             previous_frame_up_208: previous_frame[1],
+             //82BDE398..3E0: COM frame15824 + translation48 = Skeleton15872.
+-            body_position_15872: skater.animated_skeleton.board_frames.com_frame[3],
++            body_position_15872: geometric_vector(skater.animated_skeleton.board_frames.com_frame[3]),
+         },
+         p.state_2508,
+         previous_frame,
+@@ -392,3 +392,23 @@
+         p.flags_2488,
+     )
+ }
++
++// Animation frames retain VMX scratch/homogeneous W lanes. The portable ground
++// controller's rotate and inverse_rigid operate on geometric XYZ/W=0 frames.
++// Convert once at this ownership boundary, before support velocity differences.
++fn geometric_vector(v: [f32; 4]) -> [f32; 4] { [v[0], v[1], v[2], 0.0] }
++fn geometric_frame(f: [[f32; 4]; 4]) -> [[f32; 4]; 4] { f.map(geometric_vector) }
++
++#[cfg(test)]
++mod geometric_entry_tests {
++    use super::*;
++    #[test]
++    fn scratch_lanes_do_not_enter_ground_support_history() {
++        let frame = [[1.,0.,0.,0.25], [0.,1.,0.,-2.], [0.,0.,1.,1.], [10.,20.,30.,0.11297838]];
++        let output = geometric_frame(frame);
++        for i in 0..4 {
++            assert_eq!(&output[i][..3], &frame[i][..3]);
++            assert_eq!(output[i][3], 0.0);
++        }
++    }
++}
+diff --git a/crates/skate-core/src/physics/board_motion_output.rs b/crates/skate-core/src/physics/board_motion_output.rs
+--- a/crates/skate-core/src/physics/board_motion_output.rs
++++ b/crates/skate-core/src/physics/board_motion_output.rs
+@@ -64,15 +64,36 @@
+     Vector3::new(a.x - b.x, a.y - b.y, a.z - b.z)
+ }
+ pub(crate) fn inverse_length_squared(squared: f32, refinements: usize) -> f32 {
++    // Match the pinned movement_velocity exponent-normalization precedent:
++    // a positive subnormal q has finite rsqrt(q), but r*r overflows during
++    // refinement. Scaling by 2^24 keeps that product representable.
++    let (squared, rescale) = if squared > 0.0 && squared.is_subnormal() {
++        (squared * 16_777_216.0, 4096.0)
++    } else { (squared, 1.0) };
+     let mut inverse = native_arithmetic::reciprocal_square_root_estimate(squared);
+     for _ in 0..refinements {
+         let correction = (-squared).mul_add(inverse * inverse, 1.0);
+         inverse = (inverse * 0.5).mul_add(correction, inverse);
+     }
+-    inverse
++    inverse * rescale
+ }
+ pub fn length(v: Vector3) -> f32 {
+     let squared = dot(v, v);
+     let value = squared * inverse_length_squared(squared, 2);
+     if squared == 0.0 { 0.0 } else { value }
+ }
++
++#[cfg(test)]
++mod stability_tests {
++    use super::*;
++    #[test]
++    fn positive_subnormal_squared_lengths_remain_finite() {
++        for squared in [f32::from_bits(1), 5.63559e-40, f32::from_bits(0x007f_ffff)] {
++            for refinements in [1, 2] {
++                let inverse = inverse_length_squared(squared, refinements);
++                assert!(inverse.is_finite() && inverse > 0.0);
++                assert!((inverse / (1.0 / squared.sqrt()) - 1.0).abs() < 0.00001);
++            }
++        }
++    }
++}
+diff --git a/crates/skate-host/src/graph_host/clip_marker_latch.rs b/crates/skate-host/src/graph_host/clip_marker_latch.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/skate-host/src/graph_host/clip_marker_latch.rs
+@@ -0,0 +1,52 @@
++//! Project-owned adapter for the owned TU3 clip-marker request contract.
++//! Raw-image observations: Begin 82BB93E0, Update 82BB94C0, End 82B61BB8.
++//! The multiplier at 822F860C has bits 426FFFFF; the lower bound at 8231A844
++//! has bits 3F800000. See SkateV world-stability evidence for provenance.
++#[derive(Default)]
++pub(super) struct ClipMarkerLatch(i32);
++
++impl ClipMarkerLatch {
++    /// Begin samples the clip clock once. Updates publish that sample only
++    /// while the collected animation tree reports the authored marker.
++    pub(super) fn step(&mut self, phase: u8, clock: Option<(f32, f32)>, marker: bool)
++        -> Result<Option<i32>, &'static str>
++    {
++        match phase {
++            0 => {
++                let (duration, elapsed) = clock.ok_or("clip clock unavailable at marker Begin")?;
++                let frames = (duration - elapsed) * f32::from_bits(0x426f_ffff);
++                if !frames.is_finite() || frames >= 2147483648.0 {
++                    return Err("clip marker Begin cannot represent the frame interval");
++                }
++                self.0 = if frames < 1.0 { 1 } else { frames as i32 };
++                Ok(None)
++            }
++            1 if marker => Ok(Some(self.0)),
++            _ => Ok(None),
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn owned_begin_arithmetic_and_update_latching() {
++        for (duration, elapsed, expected) in [(1.,0.,59), (1.,0.25,44), (1.,0.5,29), (0.,0.,1), (0.,2.,1)] {
++            let mut latch = ClipMarkerLatch::default();
++            assert_eq!(latch.step(0,Some((duration,elapsed)),true),Ok(None));
++            assert_eq!(latch.step(1,None,false),Ok(None));
++            for _ in 0..120 { assert_eq!(latch.step(1,None,true),Ok(Some(expected))); }
++            assert_eq!(latch.step(2,None,true),Ok(None));
++        }
++    }
++    #[test]
++    fn reentry_samples_again_and_bad_clock_is_reported() {
++        let mut latch = ClipMarkerLatch::default();
++        latch.step(0,Some((1.,0.)),false).unwrap();
++        latch.step(0,Some((2.,0.)),false).unwrap();
++        assert_eq!(latch.step(1,None,true),Ok(Some(119)));
++        assert!(latch.step(0,None,false).is_err());
++        assert!(latch.step(0,Some((f32::INFINITY,0.)),false).is_err());
++    }
++}

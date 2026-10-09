@@ -1,0 +1,229 @@
+--- a/crates/skate-host/src/physics/frame.rs
++++ b/crates/skate-host/src/physics/frame.rs
+@@ -327,7 +327,11 @@
+         position:[position.x,position.y,position.z], velocity:[velocity.x,velocity.y,velocity.z],
+         forward:deck_frame.basis.columns[2],
+         switch:skater.animation.packet.riding_switch,fakie:skater.animation.packet.riding_fakie,
+-        nollie:skater.animation.packet.weight_forwards,body_flip:skater.player_input.physical.air.flag_441!=0,
++        nollie:skater.animation.packet.weight_forwards,
++        player_basis:std::array::from_fn(|i|std::array::from_fn(|j|skater.animated_skeleton.roots.animation_to_world[i][j])),
++        board_basis:deck_frame.basis.columns,
++        reckoning_up:std::array::from_fn(|i|f32::from_bits(skater.player_input.physical.reckoning.vector_96[i])),
++        body_flip:skater.player_input.physical.air.flag_441!=0,
+         suspend_air:skater.player_input.physical.air.use_air_reckoning_452!=0,
+         landing:skater.landing_quality,teleported,
+         // Revert Fill publishes its active lifetime in State66. State70 is unset.
+--- a/crates/skate-host/src/scoring_runtime.rs
++++ b/crates/skate-host/src/scoring_runtime.rs
+@@ -11,6 +11,8 @@
+     },
+ };
+ use skate_data::{collections::Collections, scoring::ScoringData};
++#[path = "scoring_runtime/rotation.rs"]
++mod rotation;
+ 
+ #[derive(Clone, Copy, PartialEq, Eq)]
+ enum Collector {
+@@ -35,6 +37,9 @@
+     pub switch: bool,
+     pub fakie: bool,
+     pub nollie: bool,
++    pub player_basis: rotation::Basis,
++    pub board_basis: rotation::Basis,
++    pub reckoning_up: [f32; 3],
+     pub body_flip: bool,
+     pub suspend_air: bool,
+     pub landing: skate_core::animation::landing_quality::Output,
+@@ -52,7 +57,7 @@
+     metric_started: [bool; 4],
+     start: [f32; 3],
+     previous: [f32; 3],
+-    previous_heading: f32,
++    rotation: rotation::Rotation,
+     spin: f32,
+     peak: f32,
+     air_factor: f32,
+@@ -124,7 +129,7 @@
+             metric_started: [false; 4],
+             start: [0.; 3],
+             previous: [0.; 3],
+-            previous_heading: 0.,
++            rotation: Default::default(),
+             spin: 0.,
+             peak: 0.,
+             air_factor: 1.,
+@@ -404,7 +409,7 @@
+             self.start = f.position;
+             self.peak = f.position[1];
+             self.spin = 0.;
+-            self.previous_heading = f.forward[0].atan2(f.forward[2]);
++            self.rotation.reset(f.player_basis, f.board_basis);
+             self.air_metrics = [0.; 5];
+             self.air_repetition = 1.;
+             self.air_repetition_set = false;
+@@ -492,12 +497,15 @@
+             if self.collector_ticks > 5 || f.flags & 0x01000000 != 0 {
+                 self.sequence_active = true;
+             }
+-            let heading = f.forward[0].atan2(f.forward[2]);
+-            let delta = (heading - self.previous_heading + std::f32::consts::PI)
+-                .rem_euclid(std::f32::consts::TAU)
+-                - std::f32::consts::PI;
+-            self.spin += delta;
+-            self.previous_heading = heading;
++            // Spin from the current engine (82DA8BE0/82DAC880/82DAC9D0): the
++            // skater root while a trick animates, otherwise the board against
++            // reckoning up; deck flicks are not skater rotation.
++            self.spin = self.rotation.update(
++                f.player_basis,
++                f.board_basis,
++                f.reckoning_up,
++                self.carriers[0].is_some(),
++            );
+             self.peak = self.peak.max(f.position[1]);
+             let dx = f.position[0] - self.start[0];
+             let dz = f.position[2] - self.start[2];
+--- /dev/null
++++ b/crates/skate-host/src/scoring_runtime/rotation.rs
+@@ -0,0 +1,141 @@
++//! Skate 3 TU3 82DA8BE0, 82DAC880 and 82DAC9D0.
++//! Track the skater root while a trick animates; otherwise track the board
++//! projected against reckoning up. Deck flicks are not skater rotations.
++pub(super) type Basis = [[f32; 3]; 3];
++const IDENTITY: Basis = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
++fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
++    a.iter().zip(b).map(|(a, b)| a * b).sum()
++}
++fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
++    [
++        a[1] * b[2] - a[2] * b[1],
++        a[2] * b[0] - a[0] * b[2],
++        a[0] * b[1] - a[1] * b[0],
++    ]
++}
++fn normalized(v: [f32; 3]) -> Option<[f32; 3]> {
++    let length = dot(v, v).sqrt();
++    (length > 1e-6 && length.is_finite()).then(|| v.map(|x| x / length))
++}
++#[derive(Clone, Copy)]
++struct Tracker {
++    previous: Basis,
++    angle: f32,
++}
++impl Tracker {
++    fn reset(&mut self, basis: Basis) {
++        self.previous = basis;
++        self.angle = 0.;
++    }
++    fn update(&mut self, basis: Basis) {
++        let up = self.previous[1];
++        // Native double cross projects the new Z onto the previous Y plane.
++        if let Some(forward) = normalized(cross(cross(up, basis[2]), up)) {
++            let cosine = dot(forward, self.previous[2]);
++            // 82DACB20 rejects a discontinuity beyond a quarter turn per tick.
++            if cosine >= 0. {
++                self.angle += dot(cross(self.previous[2], forward), up).atan2(cosine);
++            }
++        }
++        self.previous = basis;
++    }
++}
++pub(super) struct Rotation {
++    player: Tracker,
++    board: Tracker,
++    banked: f32,
++    both: bool,
++}
++impl Default for Rotation {
++    fn default() -> Self {
++        Self {
++            player: Tracker {
++                previous: IDENTITY,
++                angle: 0.,
++            },
++            board: Tracker {
++                previous: IDENTITY,
++                angle: 0.,
++            },
++            banked: 0.,
++            both: false,
++        }
++    }
++}
++impl Rotation {
++    pub fn reset(&mut self, player: Basis, board: Basis) {
++        self.player.reset(player);
++        self.board.reset(board);
++        self.banked = 0.;
++        self.both = false;
++    }
++    pub fn update(&mut self, player: Basis, board: Basis, up: [f32; 3], trick: bool) -> f32 {
++        self.player.update(player);
++        if trick {
++            if self.both {
++                self.banked += self.player.angle;
++                self.player.reset(player);
++                self.both = false;
++            }
++            self.board.reset(board);
++        } else if self.both {
++            // 82D2CDC0 builds an orthonormal frame from reckoning up/deck Z.
++            if let Some(right) = normalized(cross(up, board[2])) {
++                if let Some(forward) = normalized(cross(right, up)) {
++                    self.board.update([right, up, forward]);
++                }
++            }
++        } else {
++            self.banked += self.player.angle;
++            self.player.reset(player);
++            self.board.reset(board);
++            self.both = true;
++        }
++        self.banked + self.board.angle + if self.both { 0. } else { self.player.angle }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    pub fn yaw(degrees: f32) -> Basis {
++        let (s, c) = degrees.to_radians().sin_cos();
++        [[c, 0., -s], [0., 1., 0.], [s, 0., c]]
++    }
++    #[test]
++    fn flick_rotation_is_excluded_and_root_spin_survives_heading_wrap() {
++        let mut r = Rotation::default();
++        r.reset(yaw(170.), yaw(170.));
++        let mut angle = 0.;
++        for step in 1..=72 {
++            angle = r.update(
++                yaw(170. + step as f32 * 5.),
++                yaw(170. + step as f32 * 10.),
++                [0., 1., 0.],
++                true,
++            );
++        }
++        assert!((angle.to_degrees() - 360.).abs() < 0.01);
++        r.reset(IDENTITY, IDENTITY);
++        for step in 1..=72 {
++            angle = r.update(IDENTITY, yaw(step as f32 * 5.), [0., 1., 0.], true);
++        }
++        assert!(angle.abs() < 1e-6);
++    }
++    #[test]
++    fn standalone_board_spin_is_not_double_counted_with_player() {
++        let mut r = Rotation::default();
++        r.reset(IDENTITY, IDENTITY);
++        r.update(IDENTITY, IDENTITY, [0., 1., 0.], false);
++        let mut angle = 0.;
++        for step in 1..=36 {
++            angle = r.update(
++                yaw(step as f32 * 5.),
++                yaw(step as f32 * 5.),
++                [0., 1., 0.],
++                false,
++            );
++        }
++        assert!((angle.to_degrees() - 180.).abs() < 0.01);
++    }
++}

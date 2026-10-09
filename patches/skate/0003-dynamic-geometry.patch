@@ -1,0 +1,188 @@
+diff --git a/crates/skate-core/src/physics/board_world.rs b/crates/skate-core/src/physics/board_world.rs
+index dcf667e..5c93070 100644
+--- a/crates/skate-core/src/physics/board_world.rs
++++ b/crates/skate-core/src/physics/board_world.rs
+@@ -113,6 +113,13 @@ pub struct BoardWorld {
+     imported_floor_seams: bool,
+     contacts: Vec<BoardCollision>,
+     buffer: ContactBuffer,
++    // SkateV: host-supplied moving geometry, queried after the static world.
++    dynamic: Vec<WorldTriangle>,
++    dynamic_bounds: Vec<Bounds>,
++    // Host entity per dynamic triangle. Kept apart from the triangle tag,
++    // which Skate reads as the packed surface ID (wheel surface vote).
++    dynamic_entities: Vec<u32>,
++    dynamic_hits: Vec<(u32, Vector3, Vector3)>,
+ }
+ 
+ impl BoardWorld {
+@@ -156,6 +163,10 @@ impl BoardWorld {
+             maximum_triangle_margin,
+             imported_floor_seams: false,
+             contacts: Vec::new(),
++            dynamic: Vec::new(),
++            dynamic_bounds: Vec::new(),
++            dynamic_entities: Vec::new(),
++            dynamic_hits: Vec::new(),
+             buffer: ContactBuffer {
+                 count: 0,
+                 flushed: 0,
+@@ -191,6 +202,38 @@ impl BoardWorld {
+         &self.triangles
+     }
+ 
++    /// SkateV: replaces the host's moving geometry (vehicles, props) for the
++    /// next ticks and clears the touch record. Dynamic triangles go through
++    /// the same triangle dispatchers after the static world; static candidate
++    /// order and results are unchanged.
++    /// `entities[i]` names the host entity of `triangles[i]` for `dynamic_hits`.
++    pub fn set_dynamic(&mut self, triangles: Vec<WorldTriangle>, entities: Vec<u32>) {
++        self.dynamic_bounds = triangles
++            .iter()
++            .map(|t| {
++                Bounds::from_points(t.triangle.vertices).unwrap_or(Bounds {
++                    min: Vector3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
++                    max: Vector3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
++                })
++            })
++            .collect();
++        self.dynamic = triangles;
++        self.dynamic_entities = entities;
++        self.dynamic_entities.resize(self.dynamic.len(), 0);
++        self.dynamic_hits.clear();
++    }
++
++    pub fn dynamic(&self) -> &[WorldTriangle] {
++        &self.dynamic
++    }
++
++    /// SkateV: (entity, contact point, normal) of dynamic triangles touched
++    /// by board primitives since the last `set_dynamic`, first contact per
++    /// entity.
++    pub fn dynamic_hits(&self) -> &[(u32, Vector3, Vector3)] {
++        &self.dynamic_hits
++    }
++
+     /// Imported brush floors can meet at split edges without sharing vertices.
+     /// Their continuation is checked at the contact point rather than marking
+     /// the entire edge smooth, which would erase a real ledge on an open span.
+@@ -221,7 +264,19 @@ impl BoardWorld {
+         }
+         let direction = Vector3::new(end.x - start.x, end.y - start.y, end.z - start.z);
+         let mut nearest: Option<WorldLineHit> = None;
+-        for (_, entry) in self.line_candidates(start, end, radius) {
++        let reach = radius + 1e-3;
++        let segment = Bounds::from_points([start, end]).map(|b| b.expanded(reach));
++        let moving = self
++            .dynamic
++            .iter()
++            .zip(&self.dynamic_bounds)
++            .filter(|(_, b)| segment.is_some_and(|s| s.overlaps(**b)))
++            .map(|(t, _)| t);
++        for entry in self
++            .line_candidates(start, end, radius)
++            .map(|(_, e)| e)
++            .chain(moving)
++        {
+             let mut geometry = TriangleLineHit {
+                 position: Vector3::ZERO,
+                 normal: Vector3::ZERO,
+@@ -374,6 +429,51 @@ impl BoardWorld {
+                 }
+             }
+         }
++        // SkateV: moving host geometry, after every static candidate.
++        let dynamic_hits = &mut self.dynamic_hits;
++        for ((entry, entry_bounds), &entity) in self
++            .dynamic
++            .iter()
++            .zip(&self.dynamic_bounds)
++            .zip(&self.dynamic_entities)
++        {
++            for (volume, volume_bounds) in volumes.iter().zip(&volume_bounds) {
++                if volume_bounds.is_some_and(|b| !entry_bounds.overlaps(b)) {
++                    continue;
++                }
++                let Some(manifold) = primitive_triangle_world_contacts(
++                    volume.primitive,
++                    entry.triangle,
++                    volume.linear_velocity,
++                    query,
++                ) else {
++                    continue;
++                };
++                if manifold.count > 0 && !dynamic_hits.iter().any(|h| h.0 == entity) {
++                    dynamic_hits.push((entity, manifold.points[0].b, manifold.normal));
++                }
++                let material = combine_contact_materials(volume.material, entry.material);
++                for pair in &manifold.points[..manifold.count] {
++                    let contact = RetailContactInput {
++                        position_on_a: pair.a,
++                        position_on_b: pair.b,
++                        normal: manifold.normal,
++                        restitution: material.restitution,
++                        static_friction: material.static_friction,
++                        dynamic_friction: material.dynamic_friction,
++                        tag: entry.tag,
++                    };
++                    let Some(slot) = self.buffer.allocate(&mut publish) else {
++                        self.buffer.flush(&mut publish);
++                        return &self.contacts;
++                    };
++                    self.buffer.records[slot] = retention_record(volume.body, contact);
++                    if self.buffer.last_is_duplicate() {
++                        self.buffer.count -= 1;
++                    }
++                }
++            }
++        }
+         self.buffer.flush(&mut publish);
+         &self.contacts
+     }
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index 3d7a9c6..3b469ea 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -171,6 +171,42 @@ impl Session {
+             [r.orientation.x, r.orientation.y, r.orientation.z, r.orientation.w],
+         )
+     }
++    /// SkateV: moving host geometry (Skate space, counterclockwise) for the
++    /// following ticks, built like collision without authored edge data
++    /// (TriangleVolume defaults 0x1e1 / -1 cosines) and the same packed
++    /// surface as the static collision map (0). `tag` identifies the host
++    /// entity in `dynamic_hits` only. Returns the triangles accepted.
++    pub fn set_dynamic_triangles(&mut self, triangles: &[([[f32; 3]; 3], u32)]) -> usize {
++        use skate_core::{math::Vector3, physics::board_world::WorldTriangle};
++        let material = self.physics.floor_material();
++        let (built, entities): (Vec<_>, Vec<_>) = triangles
++            .iter()
++            .filter_map(|(points, tag)| {
++                WorldTriangle::from_vertices(
++                    points.map(|p| Vector3::new(p[0], p[1], p[2])),
++                    material,
++                    0,
++                    0x1e1,
++                    [-1.; 3],
++                    0.,
++                )
++                .map(|t| (t, *tag))
++            })
++            .unzip();
++        let n = built.len();
++        self.physics.world.set_dynamic(built, entities);
++        n
++    }
++    /// SkateV: dynamic geometry the board touched since the last
++    /// `set_dynamic_triangles`: (tag, point, normal) in Skate space.
++    pub fn dynamic_hits(&self) -> Vec<(u32, [f32; 3], [f32; 3])> {
++        self.physics
++            .world
++            .dynamic_hits()
++            .iter()
++            .map(|(t, p, n)| (*t, [p.x, p.y, p.z], [n.x, n.y, n.z]))
++            .collect()
++    }
+     pub fn pose(&self) -> Pose {
+         let v = self.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()]
+             .rates

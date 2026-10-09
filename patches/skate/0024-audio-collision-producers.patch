@@ -1,0 +1,110 @@
+--- a/crates/skate-host/src/physics/bridge/audio.rs
++++ b/crates/skate-host/src/physics/bridge/audio.rs
+@@ -6,6 +6,7 @@
+ pub(super) struct Settings {
+     slip_scale: f32, slip_offset: f32, wheel_impact_scale: f32,
+     wheel_classes_from_air: bool, wheel_impact_thresholds: [f32; 2], wheel_air_thresholds: [f32; 2],
++    body_impulse_scale: f32,
+     tricks: Vec<(skate_core::animation::output::attributes::AttributeName, TrickAudio)>,
+ }
+ #[derive(Clone, Copy, Debug)]
+@@ -39,6 +40,9 @@
+             wheel_air_thresholds: [
+                 data.float("Hash_C26949FCB638A2CA", "default", "Hash_2A70BB8A382574E4")?,
+                 data.float("Hash_C26949FCB638A2CA", "default", "Hash_6D3D91A9BA7ADCDC")?],
++            //82BD60C8 loads physics_collision+164; the retail class table
++            //binds that layout offset to this key.
++            body_impulse_scale: data.float("physics_collision", "default", "Hash_1430BD50F0A33475")?,
+         })
+     }
+ }
+@@ -59,8 +63,17 @@
+     pub limb_relative_speeds: [f32; 4],
+     pub trick: Option<TrickAudio>,
+     pub body_contact_valid: [bool; 8],
+-    pub body_contact_force: [f32; 8],
++    /// Collision80..108: normalized region impulse (82BD68F0..69D0).
++    pub body_contact_impulse: [f32; 8],
++    /// Collision112..140: region tangent speed (feedback944), not force880.
++    pub body_contact_tangent_speed: [f32; 8],
+     pub body_contact_surface: [u32; 8],
++    /// Collision180/184/188/192: feedback4056 (group8), 4048 (skater),
++    /// 4052 (other skater entity) and 4060 (group11).
++    pub body_group_8_force: f32,
++    pub body_skater_force: f32,
++    pub body_other_skater: i32,
++    pub body_group_11_force: f32,
+     pub button_mask: u32,
+     pub side_slip: f32,
+     pub wheel_impact_scale: f32,
+@@ -118,6 +131,12 @@
+     /// (packet152 bit5, variables769/776) and PhysOutSkeleton192/208
+     /// (packet288..308, variables268..280).
+     pub deck_contact: u8,
++    /// FillPhysOut82C03488..34DC, Collision24: deck contact ? clamp01(
++    /// |dot(acceleration528, normal192)| x 0.00125) : 0 (board impacts).
++    pub board_impact_level: f32,
++    /// FillPhysOut82C034E8..3570, Collision20: deck contact ? length of the
++    /// deck's relative velocity640 off its normal192 : 0.
++    pub board_slide_speed: f32,
+     pub state_flag_80: bool,
+     pub foot_local_velocity: [[f32; 4]; 2],
+ }
+@@ -166,7 +185,28 @@
+             } else { None },
+             //82BD68F0..69D0: force clears on no part; material retains its old value.
+             body_contact_valid: core::array::from_fn(|i| self.skater.collision_feedback.regions[i].part.is_some()),
+-            body_contact_force: core::array::from_fn(|i| self.skater.collision_feedback.regions[i].force),
++            //82BD68F0..69D0: |dot(velocity change4048, region normal)| times
++            //raw part weight4560 and physics_collision164, then max(0.001)
++            //and clamp to one. The4036/4040 accumulators are not audio.
++            body_contact_impulse: core::array::from_fn(|i| {
++                let region = &self.skater.collision_feedback.regions[i];
++                let Some(part) = region.part else { return 0.0 };
++                let change = self.skater.skeleton.record.velocity_changes[part];
++                let weight = self.skater.skeleton.definition.animation_masses.part_weights[part];
++                let level = native_dot(change, region.normal).abs() * weight
++                    * self.audio_settings.body_impulse_scale;
++                let low = if 0.001f32 - level >= 0.0 { 0.001 } else { level };
++                let low = if -low >= 0.0 { 0.0 } else { low };
++                if 1.0 - low >= 0.0 { low } else { 1.0 }
++            }),
++            body_contact_tangent_speed: core::array::from_fn(|i| {
++                let region = &self.skater.collision_feedback.regions[i];
++                if region.part.is_some() { region.tangent_speed } else { 0.0 }
++            }),
++            body_group_8_force: self.skater.collision_feedback.maximum_group_8_force,
++            body_skater_force: self.skater.collision_feedback.maximum_skater_force,
++            body_other_skater: self.skater.collision_feedback.other_skater,
++            body_group_11_force: self.skater.collision_feedback.maximum_group_11_force,
+             body_contact_surface: core::array::from_fn(|i| self.skater.collision_feedback.regions[i].material_flags),
+             button_mask: u32::from(self.input.raw_input().buttons),
+             side_slip: if p.collision.wheel_count_0 > 0 { slip } else { 0.0 },
+@@ -239,6 +279,27 @@
+             right_foot_within_deck: p.skeleton.flag_601,
+             skeleton_over: p.skeleton.over_599,
+             deck_contact: p.collision.flag_3475,
++            board_impact_level: {
++                let deck = skate_core::physics::board::BodyId::Deck.index();
++                let ground = &self.physics.riding.ground;
++                if ground.parts[deck].in_contact {
++                    let a = ground.accelerations[deck];
++                    let n = ground.parts[deck].normal;
++                    let x = native_dot([a.x, a.y, a.z, 0.0], [n.x, n.y, n.z, 0.0]).abs()
++                        * f32::from_bits(0x3AA3_D70A);
++                    let x = if -x >= 0.0 { 0.0 } else { x };
++                    if 1.0 - x >= 0.0 { x } else { 1.0 }
++                } else { 0.0 }
++            },
++            board_slide_speed: {
++                let deck = skate_core::physics::board::BodyId::Deck.index();
++                let part = self.physics.riding.ground.parts[deck];
++                if part.in_contact {
++                    let (n, v) = (part.normal, part.relative_velocity);
++                    let along = native_dot([n.x, n.y, n.z, 0.0], [v.x, v.y, v.z, 0.0]);
++                    native_length([v.x - n.x * along, v.y - n.y * along, v.z - n.z * along, 0.0])
++                } else { 0.0 }
++            },
+             state_flag_80: flags[80 - 52],
+             //82BF22A0: toe velocities in the physical board's frame.
+             foot_local_velocity: self.skater.foot_physical.output.local_velocity,

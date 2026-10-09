@@ -1,0 +1,138 @@
+diff --git a/crates/skate-host/src/physics/input_phase.rs b/crates/skate-host/src/physics/input_phase.rs
+index 434e5a0..6f498dc 100644
+--- a/crates/skate-host/src/physics/input_phase.rs
++++ b/crates/skate-host/src/physics/input_phase.rs
+@@ -2,6 +2,7 @@
+ //! PlayerInput retains the original ordering; callbacks split host ownership.
+ #[path = "input_teleport.rs"]
+ mod teleport;
++pub(crate) use teleport::facing_from_visual;
+ use super::{
+     GamePhysics, SkaterRuntime,
+     animated_skeleton::AnimatedSkeleton,
+diff --git a/crates/skate-host/src/physics/input_teleport.rs b/crates/skate-host/src/physics/input_teleport.rs
+index 4a61e90..dd1e644 100644
+--- a/crates/skate-host/src/physics/input_teleport.rs
++++ b/crates/skate-host/src/physics/input_teleport.rs
+@@ -19,7 +19,10 @@ impl Callbacks<'_, '_> {
+         self.life
+             .skeleton_controller
+             .request_ground(self.collision_mode)?;
+-        let target = horizontal_spawn(requested);
++        // The requested matrix is world facing. reset_physical still applies the
++        // live switch flip (Processed2468 bit20), so pre-flip here to cancel it
++        // (current engine input_teleport.rs; patch 0040).
++        let target = match_board_stance(horizontal_spawn(requested), p.flags_2468);
+         bevy::log::info!(
+             on_board = p.byte_1600 & 1 != 0,
+             requested_x = requested[3][0],
+@@ -28,6 +31,7 @@ impl Callbacks<'_, '_> {
+             applied_x = target[3][0],
+             applied_y = target[3][1],
+             applied_z = target[3][2],
++            switch = p.flags_2468 & SWITCH != 0,
+             "player teleport spawn"
+         );
+         player.flags_1296 = ((player.flags_1296 & 0xffef_ffff) & 0x81ff_ffff) | 0x6000_0000;
+@@ -159,3 +163,49 @@ fn horizontal_spawn(requested: NativeMatrix) -> NativeMatrix {
+     result[3][1] += 0.1;
+     result
+ }
++
++const SWITCH: u32 = 0x0010_0000;
++/// Processed2468 bit20 flips Ri/At on SetTransform. Invert first so a world
++/// facing survives reset, whether the player is regular or switch.
++pub(crate) fn match_board_stance(mut transform: NativeMatrix, flags_2468: u32) -> NativeMatrix {
++    if flags_2468 & SWITCH != 0 {
++        flip_heading(&mut transform);
++    }
++    transform
++}
++
++fn flip_heading(transform: &mut NativeMatrix) {
++    for i in [0, 2] {
++        transform[i] = transform[i].map(|v| -v);
++    }
++}
++
++/// World-space skater facing for a teleport. Switch/mirror bits unflip the
++/// live visual axes so the stored At is the direction they were facing.
++pub(crate) fn facing_from_visual(
++    mut transform: NativeMatrix,
++    flags_2468: u32,
++    flags_2476: u32,
++    on_board: bool,
++) -> NativeMatrix {
++    if on_board && flags_2468 & SWITCH != 0 || !on_board && flags_2476 & 4 != 0 {
++        flip_heading(&mut transform);
++    }
++    transform
++}
++
++#[cfg(test)]
++mod stance_tests {
++    use super::*;
++    #[test]
++    fn switch_stance_cancels_across_reset() {
++        let mut facing = IDENTITY;
++        facing[0] = [0.0, 0.0, -1.0, 0.0];
++        facing[2] = [1.0, 0.0, 0.0, 0.0];
++        // Captured switch, returned regular (and the reverse): same world At.
++        let stored = facing_from_visual(facing, SWITCH, 0, true);
++        assert_eq!(match_board_stance(stored, 0)[2], [-1.0, 0.0, 0.0, 0.0]);
++        let applied = match_board_stance(match_board_stance(facing, SWITCH), SWITCH);
++        assert_eq!(applied[2], facing[2]);
++    }
++}
+diff --git a/crates/skate-host/src/physics.rs b/crates/skate-host/src/physics.rs
+index 423242b..2ce68b7 100644
+--- a/crates/skate-host/src/physics.rs
++++ b/crates/skate-host/src/physics.rs
+@@ -57,6 +57,7 @@ mod ground_exit;
+ mod ground_phase;
+ mod ground_runtime;
+ mod input_phase;
++pub(crate) use input_phase::facing_from_visual;
+ mod landing_quality;
+ mod offboard;
+ mod player_input;
+diff --git a/crates/skate-host/src/session_marker/mod.rs b/crates/skate-host/src/session_marker/mod.rs
+index 3df8905..3ab3b98 100644
+--- a/crates/skate-host/src/session_marker/mod.rs
++++ b/crates/skate-host/src/session_marker/mod.rs
+@@ -48,6 +48,7 @@ fn update(session:&mut SessionMarker,input:&ControllerInput,physics:&GamePhysics
+         return;
+     }
+     let p = &skater.player_input.physical;
++    let processed = &skater.player_input.processed;
+     let on_board = p.state.category_12 != 500;
+     let deck = physics.board.part_transforms()[BodyId::Deck.index()];
+     let mut transform = skater.animated_skeleton.roots.animation_to_world;
+@@ -61,19 +62,15 @@ fn update(session:&mut SessionMarker,input:&ControllerInput,physics:&GamePhysics
+             deck.translation.z,
+             0.,
+         ];
+-        //82591E30: above .5m/s, project normalized velocity onto world Up.
+-        //The cross products are deliberately not normalized a second time.
+-        let velocity = Vec3::from_slice(&p.skateboard.vector_80.map(f32::from_bits)[..3]);
+-        if velocity.length_squared() > 0.25 {
+-            let right = Vec3::Y.cross(velocity.normalize());
+-            let forward = right.cross(Vec3::Y);
+-            if forward.length_squared() > 0.9 {
+-                transform[0] = right.extend(0.).to_array();
+-                transform[1] = Vec3::Y.extend(0.).to_array();
+-                transform[2] = forward.extend(0.).to_array();
+-            }
+-        }
+     }
++    // Patch 0040 (current engine): store the facing with switch/mirror unflipped,
++    // so reset_player's stance pre-flip restores it whatever the return stance.
++    transform = crate::physics::facing_from_visual(
++        transform,
++        processed.flags_2468,
++        processed.flags_2476,
++        on_board,
++    );
+     let state = p.state.state_16;
+     let state_allowed = (p.state.category_12 == 100
+         && p.collision.wheel_count_0 >= 2

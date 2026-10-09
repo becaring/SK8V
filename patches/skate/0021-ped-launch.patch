@@ -1,0 +1,99 @@
+--- a/crates/skate-host/src/physics/host_bodies.rs
++++ b/crates/skate-host/src/physics/host_bodies.rs
+@@ -94,6 +94,17 @@ pub(crate) struct Proxies {
+     /// the velocity its pushes gave it, displaced from the host's report by
+     /// the difference, until the host's velocity has taken the push over.
+     pub struck: std::collections::HashMap<u32, Struck>,
++    /// Launch mode (owner decision 2026-10-03, `SKATEV_PED_LAUNCH`, default
++    /// on): host characters do not touch the rider at all; the first contact
++    /// launches them instead. Tags launched and still within reach of the
++    /// rider (no second launch until they are apart).
++    pub launched: std::collections::HashSet<u32>,
++}
++
++/// Launch mode for host characters (see `Proxies::launched`).
++pub fn launch_mode() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| std::env::var("SKATEV_PED_LAUNCH").map_or(true, |v| v != "0"))
+ }
+ 
+ #[derive(Clone, Copy, Debug)]
+--- a/crates/skate-host/src/physics/solve.rs
++++ b/crates/skate-host/src/physics/solve.rs
+@@ -79,6 +79,8 @@ pub(super) fn advance(
+     // SkateV: host bodies with their own primitives (GTA peds: posed ragdoll
+     // parts) meet the local volumes as remote actors do, as body B, with the
+     // skater's own material (a person meeting a person).
++    let mut launch_contacts = Vec::new();
++    let mut near = std::collections::HashSet::new();
+     if let Some(material) = skeleton_volumes.first().map(|v| v.material) {
+         for (i, h) in physics.host_bodies.inputs.iter().enumerate() {
+             // The proxy body carries the solve's own motion of a struck character.
+@@ -100,15 +102,66 @@ pub(super) fn advance(
+                     linear_velocity: skate_core::math::Vector3::new(point.x, point.y, point.z),
+                     material,
+                 };
++                let launch = h.collision_group == super::host_bodies::CHARACTER_GROUP
++                    && super::host_bodies::launch_mode();
+                 for a in board_volumes.iter().chain(&skeleton_volumes) {
+                     let (ac, ar) = super::network::bounds(a.primitive);
+                     if ac.distance_squared(bc) <= (ar + br + 0.05).powi(2) {
+-                        assembly_contacts::append_pair(&mut contacts, a, &b);
++                        if launch {
++                            assembly_contacts::append_pair(&mut launch_contacts, a, &b);
++                            near.insert(h.tag);
++                        } else {
++                            assembly_contacts::append_pair(&mut contacts, a, &b);
++                        }
+                     }
+                 }
+             }
+         }
+     }
++    // Launch mode: a character's contacts never enter the solve (the rider
++    // keeps all his motion and no wipeout hears of them). The first contact
++    // of an encounter that closes on the character launches it as if struck
++    // by something that does not give: an elastic hit off an unstoppable
++    // rider, twice the closing speed along the contact normal. The host
++    // scales and lifts it (PedLaunchScale, PedLaunchLift).
++    physics.host_bodies.launched.retain(|tag| near.contains(tag));
++    {
++        let mut best: std::collections::HashMap<usize, (f32, skate_core::math::Vector3, skate_core::math::Vector3)> =
++            std::collections::HashMap::new();
++        for c in &launch_contacts {
++            let skate_core::physics::board_step::CollisionBody::Attached(index) = c.body_b else { continue };
++            let Some(proxy) = index.checked_sub(host_base) else { continue };
++            let Some(h) = physics.host_bodies.inputs.get(proxy) else { continue };
++            if physics.host_bodies.launched.contains(&h.tag) {
++                continue;
++            }
++            let own = match c.body_a {
++                skate_core::physics::board_step::CollisionBody::Board(id) => physics.board.bodies()[id.index()].rates.linear_velocity,
++                skate_core::physics::board_step::CollisionBody::Attached(part) if part < skater.skeleton.bodies().len() => {
++                    skater.skeleton.bodies()[part].rates.linear_velocity
++                }
++                _ => continue,
++            };
++            let host = physics.host_bodies.bodies[proxy].rates.linear_velocity;
++            // The normal points from the character (B) to the rider (A).
++            let n = c.contact.normal;
++            let closing = (host.x - own.x) * n.x + (host.y - own.y) * n.y + (host.z - own.z) * n.z;
++            if closing > best.get(&proxy).map_or(0.0, |b| b.0) {
++                best.insert(proxy, (closing, n, c.contact.position_on_b));
++            }
++        }
++        for (proxy, (closing, n, point)) in best {
++            let h = &physics.host_bodies.inputs[proxy];
++            let mass = if h.inverse_mass > 0.0 { 1.0 / h.inverse_mass } else { continue };
++            let j = -2.0 * closing * mass;
++            physics.host_bodies.impulses.push(super::host_bodies::HostImpulse {
++                tag: h.tag,
++                point: [point.x, point.y, point.z],
++                impulse: [n.x * j, n.y * j, n.z * j],
++            });
++            physics.host_bodies.launched.insert(h.tag);
++        }
++    }
+     physics.contact_count = contacts.len();
+     let dt = physics.settings.step.simulation.time_step;
+     // SkateV: host-driven impacts take the whole assembly first (see

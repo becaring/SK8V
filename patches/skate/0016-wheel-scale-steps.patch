@@ -1,0 +1,124 @@
+--- a/crates/skate-core/src/physics/board_world/tests.rs
++++ b/crates/skate-core/src/physics/board_world/tests.rs
+@@ -426,3 +426,48 @@ fn plank_lips_in_a_pile_are_passable_but_a_curb_is_not() {
+     tall.extend(riser_at(0., 0., 0.2));
+     assert!(!sheet_lip(&tall, [0., 0.1, 0.], [-1., 0., 0.]));
+ }
++
++// SkateV wheel-scale steps.
++fn wheel_step(triangles: &[WorldTriangle], body: CollisionBody, board: [f32; 3], contact: [f32; 3], normal: [f32; 3]) -> bool {
++    let bounds: Vec<Bounds> = triangles.iter().map(|t| Bounds::from_points(t.triangle.vertices).unwrap()).collect();
++    let candidates: Vec<usize> = (0..triangles.len()).collect();
++    let n = Vector3::new(normal[0], normal[1], normal[2]);
++    let len = (n.x * n.x + n.y * n.y + n.z * n.z).sqrt();
++    wheel_scale_step(
++        body,
++        Vector3::new(board[0], board[1], board[2]),
++        Vector3::new(contact[0], contact[1], contact[2]),
++        Vector3::new(n.x / len, n.y / len, n.z / len),
++        &candidates,
++        triangles,
++        &bounds,
++    )
++}
++fn step_world(h: f32) -> Vec<WorldTriangle> {
++    let mut w: Vec<WorldTriangle> = Vec::new();
++    w.extend(floor(-1., 0., 0.));
++    w.extend(floor(0., 1., h));
++    w.extend(riser_at(0., 0., h));
++    w
++}
++
++#[test]
++fn wheels_roll_over_steps_below_their_axle_but_not_curbs() {
++    let wheel = CollisionBody::Board(BodyId::RightFrontWheel);
++    let r = RETAIL_WHEEL_RADIUS;
++    // A wheel resting on the road (centre r up), touching the riser at its
++    // equator: a 1.8 cm step (pagoda grass bed) and a 6 mm ramp-top lip pass.
++    for h in [0.018f32, 0.006] {
++        let w = step_world(h);
++        assert!(wheel_step(&w, wheel, [-0.001, r, 0.], [0., h, 0.], [-0.9, -0.4, 0.]), "{h} edge below the axle");
++    }
++    // A 7.5 cm curb: its top is above the wheel centre.
++    let w = step_world(0.075);
++    assert!(!wheel_step(&w, wheel, [-0.001, r, 0.], [0., r, 0.], [-1., 0., 0.]));
++    // Deck: a lip below its underside passes, a riser up to it does not.
++    let deck = CollisionBody::Board(BodyId::Deck);
++    let w = step_world(0.018);
++    assert!(wheel_step(&w, deck, [-0.05, 0.088, 0.], [0., 0.018, 0.], [-1., 0.1, 0.]));
++    let w = step_world(0.075);
++    assert!(!wheel_step(&w, deck, [-0.05, 0.06, 0.], [0., 0.06, 0.], [-1., 0., 0.]));
++}
+--- a/crates/skate-core/src/physics/board_world.rs
++++ b/crates/skate-core/src/physics/board_world.rs
+@@ -431,7 +431,8 @@ impl BoardWorld {
+                     let gap = imported_floor_seams
+                         && !internal
+                         && (coplanar_gap_contact(entry, pair.b, manifold.normal, &candidates, triangles, triangle_bounds)
+-                            || stacked_sheet_lip(pair.b, manifold.normal, &candidates, triangles, triangle_bounds));
++                            || stacked_sheet_lip(pair.b, manifold.normal, &candidates, triangles, triangle_bounds)
++                            || wheel_scale_step(volume.body, pair.a, pair.b, manifold.normal, &candidates, triangles, triangle_bounds));
+                     let internal = internal || gap;
+                     // SkateV diagnostic (HOST replays only): SKATEV_CONTACT_TRACE=1
+                     // prints non-floor static contacts (2: all) with their source
+@@ -738,6 +739,60 @@ fn stacked_sheet_lip(
+     })
+ }
+ 
++/// SkateV wheel-scale steps (owner runs 2026-10-02: snags on lips that read
++/// as 1..2 mm by the pagoda grass bed, whose collision stands 1.8 cm proud;
++/// wheels stuck at skate-park ramp tops, whose decks stand 5..20 mm above
++/// the ramps). Skate's contact answer for a step is a sideways push from its
++/// edge, so a wheel stops dead at any lip. Board wheels are spheres of the
++/// retail radius (3.1 cm): a step whose top lies below the wheel centre is
++/// one the wheel rolls over with speed. Its lateral contact is dropped; the
++/// step top's own contacts lift the wheel, so the bump stays. A step above
++/// the wheel centre (curbs, ledges, risers of 3.1 cm and more) keeps its
++/// contact and remains an obstacle. Trucks and deck, touching with their
++/// underside, ignore a nearly horizontal push from a lip that is no higher
++/// than the touching point (less r(1 - 0.9) = 3.1 mm, the height a retail
++/// wheel climbs as a walkable slope). Walls and anything without a walkable
++/// top in reach keep their contacts.
++fn wheel_scale_step(
++    body: CollisionBody,
++    board_point: Vector3,
++    contact: Vector3,
++    contact_normal: Vector3,
++    candidates: &[usize],
++    triangles: &[WorldTriangle],
++    bounds: &[Bounds],
++) -> bool {
++    // HOST A/B diagnostic: SKATEV_WHEEL_STEPS=0 disables the rule.
++    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    if *OFF.get_or_init(|| std::env::var("SKATEV_WHEEL_STEPS").is_ok_and(|v| v == "0")) {
++        return false;
++    }
++    let lateral = contact_normal.x.hypot(contact_normal.z);
++    if lateral < 0.5 {
++        return false;
++    }
++    let r = RETAIL_WHEEL_RADIUS;
++    let (dx, dz) = (contact_normal.x / lateral, contact_normal.z / lateral);
++    // The step's walkable top just beyond the contact (away from the board).
++    let beyond = (contact.x - dx * 0.01, contact.z - dz * 0.01);
++    let Some(top) = walkable_surfaces(beyond.0, beyond.1, candidates, triangles, bounds)
++        .map(|(h, _, _)| h)
++        .filter(|h| *h >= contact.y - 0.01 && *h <= contact.y + 0.05)
++        .max_by(f32::total_cmp)
++    else {
++        return false;
++    };
++    match body {
++        CollisionBody::Board(BodyId::RightFrontWheel | BodyId::LeftFrontWheel | BodyId::RightBackWheel | BodyId::LeftBackWheel) => {
++            // The wheel sphere's centre: the touching point one radius back
++            // along the contact normal.
++            let centre = board_point.y + contact_normal.y * r;
++            top < centre
++        }
++        _ => board_point.y >= top - r * (1.0 - IMPORTED_SEAM_MIN_UP) && contact_normal.y < 0.25,
++    }
++}
++
+ /// Walkable faces over (x, z): height there, normal, index.
+ fn walkable_surfaces<'a>(
+     x: f32,

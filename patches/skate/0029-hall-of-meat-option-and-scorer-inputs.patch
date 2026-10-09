@@ -1,0 +1,195 @@
+diff --git a/crates/skate-host/src/physics/skater.rs b/crates/skate-host/src/physics/skater.rs
+index 49156a9..06a0270 100644
+--- a/crates/skate-host/src/physics/skater.rs
++++ b/crates/skate-host/src/physics/skater.rs
+@@ -113,6 +113,12 @@ pub(crate) struct SkaterRuntime {
+     pub board_possession: super::offboard::board_manager::Owner,
+     /// SkateV: last known-air launch, observed for retail-quirk work.
+     pub skatev_last_launch: Option<SkatevLaunch>,
++    /// SkateV Hall of Meat (overlay patch 0029): the game-settings option the
++    /// conditioner capability mask reads, set by the host.
++    pub skatev_hall_of_meat: bool,
++    /// SkateV Hall of Meat: Scoring2+200 as the host's WipeoutScorer last
++    /// published it (broken-bone slow-mo countdown active: 1.0, else 0.0).
++    pub skatev_broken_bone_duration: f32,
+     /// SkateV: one-shot start velocity (Skate world) for the next off-board
+     /// (centre-of-mass branch) launch; armed by RetailQuirk::BackwardsMan.
+     pub skatev_launch_override: Option<[f32; 3]>,
+@@ -328,6 +334,8 @@ impl SkaterRuntime {
+             skateboard_controller: super::skateboard_controller::SkateboardController::new(),
+             board_possession: super::offboard::board_manager::Owner::load(&data)?,
+             skatev_last_launch: None,
++            skatev_hall_of_meat: false,
++            skatev_broken_bone_duration: 0.0,
+             skatev_launch_override: None,
+             board_possession_live: super::offboard::board_manager::runtime::LiveState::load(
+                 &data, physics,
+diff --git a/crates/skate-host/src/physics/animation_phase.rs b/crates/skate-host/src/physics/animation_phase.rs
+index a3d7393..fd67f28 100644
+--- a/crates/skate-host/src/physics/animation_phase.rs
++++ b/crates/skate-host/src/physics/animation_phase.rs
+@@ -354,11 +354,12 @@ pub(crate) fn publish_feedback(
+     skater: &mut SkaterRuntime,
+ ) -> PhysicalFeedback {
+     // World8275F430 -> AirCollector82DA7888 publishes the complete mask.
+-    // This host runs active gameplay with HoM and challenges outside its scope.
++    // This host runs active gameplay with challenges outside its scope; Hall
++    // of Meat is the host's option (SkateV patch 0029).
+     skater.player_input.physical.scoring.capabilities_204 =
+         skate_core::player::conditioner_capabilities::ConditionerCapabilityContext {
+             in_front_end: false,
+-            hall_of_meat_enabled: false,
++            hall_of_meat_enabled: skater.skatev_hall_of_meat,
+             challenge_query_active: false,
+             challenge_configuration_enabled: false,
+         }
+diff --git a/crates/skate-host/src/physics/camera_output.rs b/crates/skate-host/src/physics/camera_output.rs
+index 1b186bb..18ec2e7 100644
+--- a/crates/skate-host/src/physics/camera_output.rs
++++ b/crates/skate-host/src/physics/camera_output.rs
+@@ -151,8 +151,9 @@ pub(crate) fn publish(
+             trick_125: bit(p.flags_2480, 11),
+             //Completed State503 Fill82D4E0A8, consumed as Ground322 by the camera.
+             hippy_jump_322: physical.ground.hippy_jumping_322,
+-            //Scoring2 reset82DE4468; HoM duration stays inactive in this host.
+-            broken_bone_duration_200: 0.0,
++            //Scoring2+200: WipeoutScorer82DAF7F0 publishes it; SkateV's scorer
++            //runs after the tick, so this is the preceding tick's value.
++            broken_bone_duration_200: skater.skatev_broken_bone_duration,
+             //AirCollector82DA78D0 publishes the world conditioner capability mask.
+             capabilities_204: physical.scoring.capabilities_204,
+         },
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index 0985f84..0122eff 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -4,6 +4,7 @@ use crate::{camera::CameraRuntime, graph_runtime::StockGraphs, input::Controller
+ use bevy::prelude::*;
+ use skate_data::skate_map::{Collision, Geometry, Rail, SkateMap};
+ use std::path::Path;
++pub mod hom;
+ pub mod hud;
+ pub use super::host_bodies::{CHARACTER_GROUP, HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+ 
+diff --git a/crates/skate-host/src/physics/bridge/hom.rs b/crates/skate-host/src/physics/bridge/hom.rs
+new file mode 100644
+index 0000000..63baaf3
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/hom.rs
+@@ -0,0 +1,116 @@
++//! SkateV Hall of Meat (overlay patch 0029). The option itself and the
++//! completed physical observations a host-side WipeoutScorer reads after each
++//! tick. Read-only except for the two values the host sets: the option and the
++//! scorer's broken-bone publication (Scoring2+200), which the camera's
++//! broken-bone slow-mo consumes on the next tick.
++use super::Session;
++
++/// One scored bone's strongest contact this tick. Bones 0..22 are skeleton
++/// parts 1..23 (their ordinary contact); bones 23 and 24 are the specific
++/// contacts of parts 1 and 23.
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub struct HomBone {
++    /// Contact point of the part's ordinary contact (Skate space).
++    pub point: [f32; 3],
++    /// Contact normal of the scored contact.
++    pub normal: [f32; 3],
++    /// Contact force of the scored contact (0 without contact).
++    pub force: f32,
++    pub tag: u32,
++    /// The part touched something outside the vehicle, other-skater and
++    /// character groups this tick (the world).
++    pub world: bool,
++}
++
++/// Completed physical output the WipeoutScorer consumes (Skate space, y up).
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub struct HomInput {
++    /// Filtered physical category (0 without a filtered state).
++    pub category: u32,
++    /// Player state flags 68 (teleport countdown) and 69 (teleport request).
++    pub teleport_flags: [bool; 2],
++    /// Air+452: air reckoning in use.
++    pub air_reckoning: bool,
++    /// Skeleton+599.
++    pub over: bool,
++    /// Skeleton+580.
++    pub response_strength: f32,
++    /// SystemReckoning+16 / +64: centre of mass velocity and position.
++    pub com_velocity: [f32; 3],
++    pub com_position: [f32; 3],
++    /// Pelvis (part 23) frame axes x, y, z.
++    pub pelvis: [[f32; 3]; 3],
++    /// State+44/+48: a hard landing this tick (wipeout reason 6): 1 left
++    /// foot planted, 2 right, 0 otherwise; and its value (0 without one).
++    pub hard_landing_kind: u32,
++    pub hard_landing_value: f32,
++    pub bones: [HomBone; 25],
++    /// Wipeout gesture stick (WipeoutGestureStickX/Y).
++    pub stick: [f32; 2],
++}
++
++fn v3(v: [f32; 4]) -> [f32; 3] {
++    [v[0], v[1], v[2]]
++}
++fn raw3(v: [u32; 4]) -> [f32; 3] {
++    [f32::from_bits(v[0]), f32::from_bits(v[1]), f32::from_bits(v[2])]
++}
++
++impl Session {
++    /// The Hall of Meat game option (conditioner capability context).
++    pub fn set_hall_of_meat(&mut self, enabled: bool) {
++        self.skater.skatev_hall_of_meat = enabled;
++    }
++    /// The host scorer's Scoring2+200 publication for the next tick's camera.
++    pub fn set_broken_bone_duration(&mut self, duration: f32) {
++        self.skater.skatev_broken_bone_duration = if duration.is_finite() { duration } else { 0.0 };
++    }
++    /// The WipeoutScorer's observations after the last `advance`.
++    pub fn hom_input(&self) -> HomInput {
++        let skater = &self.skater;
++        let physical = &skater.player_input.physical;
++        let feedback = &skater.collision_feedback;
++        let mut bones = [HomBone::default(); 25];
++        for (b, bone) in bones.iter_mut().enumerate() {
++            let part = match b {
++                23 => 1,
++                24 => 23,
++                _ => b + 1,
++            };
++            let c = &feedback.bones[part];
++            let specific = b >= 23;
++            *bone = HomBone {
++                point: v3(c.point),
++                normal: v3(if specific { c.specific_normal } else { c.normal }),
++                force: if specific { c.specific_force } else { c.force },
++                tag: if specific { c.specific_tag } else { c.tag },
++                world: c.groups[3],
++            };
++        }
++        let pelvis = skater.skeleton.record.pose[23];
++        let wipeout = &skater.wipeout.state;
++        let air = &physical.air;
++        HomInput {
++            category: skater.player_state.filtered_output.as_ref().map_or(0, |f| f.category as u32),
++            teleport_flags: [skater.player_state.state_flags[68 - 52], skater.player_state.state_flags[69 - 52]],
++            air_reckoning: air.use_air_reckoning_452 != 0,
++            over: physical.skeleton.over_599 != 0,
++            response_strength: physical.skeleton.response_strength_580,
++            com_velocity: raw3(physical.reckoning.vector_16),
++            com_position: raw3(physical.reckoning.vector_64),
++            pelvis: [v3(pelvis[0]), v3(pelvis[1]), v3(pelvis[2])],
++            hard_landing_kind: if !wipeout.reasons[6] {
++                0
++            } else if air.footplant_left_449 != 0 {
++                1
++            } else if air.footplant_right_450 != 0 {
++                2
++            } else {
++                0
++            },
++            hard_landing_value: if wipeout.reasons[6] { wipeout.values[6] } else { 0.0 },
++            bones,
++            stick: skater.animation_input.extra.wipeout_gesture,
++        }
++    }
++}

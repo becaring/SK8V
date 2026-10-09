@@ -1,0 +1,88 @@
+diff --git a/crates/skate-core/src/player/offboard/air_launch.rs b/crates/skate-core/src/player/offboard/air_launch.rs
+index 6976a9f..6546db5 100644
+--- a/crates/skate-core/src/player/offboard/air_launch.rs
++++ b/crates/skate-core/src/player/offboard/air_launch.rs
+@@ -75,6 +75,25 @@ pub fn produce(
+     current: bool,
+ ) -> Result<(), &'static str> {
+     let selected_mode = mode(p, current);
++    // SkateV diagnostic: name the first non-finite input, so an owner-run
++    // "Nonfinite BipedAir launch packet" says where the NaN came from.
++    for (value, name) in [
++        (p.velocity_608, "Nonfinite BipedAir launch input velocity608"),
++        (p.velocity_912, "Nonfinite BipedAir launch input velocity912"),
++        (p.position_592, "Nonfinite BipedAir launch input position592"),
++        (p.up_544, "Nonfinite BipedAir launch input up544"),
++        (p.forward_224, "Nonfinite BipedAir launch input forward224"),
++        (p.board_position_112, "Nonfinite BipedAir launch input board_position112"),
++        (state.frame_output.frame[1], "Nonfinite BipedAir launch input biped frame up"),
++        (state.motion.frame_0[1], "Nonfinite BipedAir launch input motion frame up"),
++    ] {
++        if value.iter().any(|x| !x.is_finite()) {
++            return Err(name);
++        }
++    }
++    if !p.raw_x_2692.is_finite() || !p.raw_z_2688.is_finite() {
++        return Err("Nonfinite BipedAir launch input stick");
++    }
+     //Validate the host contract before ANY packet field changes. No numerical
+     //fallback or inferred geometry is substituted for an unavailable producer.
+     let departure =
+@@ -145,6 +164,17 @@ pub fn produce(
+         2 | 6 => {}
+         _ => unreachable!("mode returns only the seven native cases"),
+     }
++    if velocity.iter().chain(secondary.iter()).any(|x| !x.is_finite()) {
++        // SkateV diagnostic: the mode's own arithmetic produced it.
++        return Err(match selected_mode {
++            0 => "Nonfinite BipedAir launch from mode0 (ground)",
++            1 => "Nonfinite BipedAir launch from mode1 (departure)",
++            3 => "Nonfinite BipedAir launch from mode3 (deck landing)",
++            4 => "Nonfinite BipedAir launch from mode4 (jump)",
++            5 => "Nonfinite BipedAir launch from mode5 (walk off)",
++            _ => "Nonfinite BipedAir launch from mode2/6",
++        });
++    }
+     packet.velocity_0 = velocity;
+     packet.secondary_velocity_16 = secondary;
+     Ok(())
+diff --git a/crates/skate-core/src/player/offboard/air_selector/candidates.rs b/crates/skate-core/src/player/offboard/air_selector/candidates.rs
+index e89c8c1..eb59e2d 100644
+--- a/crates/skate-core/src/player/offboard/air_selector/candidates.rs
++++ b/crates/skate-core/src/player/offboard/air_selector/candidates.rs
+@@ -21,20 +21,22 @@ pub(super) fn prepare(
+     if [p.scalar_96, p.scalar_100, p.scalar_104]
+         .iter()
+         .any(|x| !x.is_finite())
+-        || [
+-            p.velocity_0,
+-            p.secondary_velocity_16,
+-            p.position_32,
+-            p.up_48,
+-            p.forward_64,
+-            p.board_position_80,
+-            gravity,
+-        ]
+-        .into_iter()
+-        .flatten()
+-        .any(|x| !x.is_finite())
+     {
+-        return Err("Nonfinite BipedAir launch packet");
++        return Err("Nonfinite BipedAir launch packet: scalars");
++    }
++    // SkateV diagnostic: one message per field (was one for all).
++    for (value, name) in [
++        (p.velocity_0, "Nonfinite BipedAir launch packet: velocity0"),
++        (p.secondary_velocity_16, "Nonfinite BipedAir launch packet: secondary_velocity16"),
++        (p.position_32, "Nonfinite BipedAir launch packet: position32"),
++        (p.up_48, "Nonfinite BipedAir launch packet: up48"),
++        (p.forward_64, "Nonfinite BipedAir launch packet: forward64"),
++        (p.board_position_80, "Nonfinite BipedAir launch packet: board_position80"),
++        (gravity, "Nonfinite BipedAir launch packet: gravity"),
++    ] {
++        if value.iter().any(|x| !x.is_finite()) {
++            return Err(name);
++        }
+     }
+     let initial = scale(UP, -(s.height - s.sphere_radius));
+     let mut correction = [0., 0.1, 0., 0.];

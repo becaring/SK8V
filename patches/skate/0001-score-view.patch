@@ -1,0 +1,73 @@
+diff --git a/crates/skate-host/src/lib.rs b/crates/skate-host/src/lib.rs
+index d844700..21352b1 100644
+--- a/crates/skate-host/src/lib.rs
++++ b/crates/skate-host/src/lib.rs
+@@ -15,5 +15,6 @@ mod crash_context;
+ mod tuning;
+ 
+ pub use physics::bridge;
++pub use scoring_runtime::View as ScoreView;
+ 
+ mod session_marker;
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index e03fc9a..4d30d53 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -158,6 +158,10 @@ impl Session {
+         );
+         self.advance_published()
+     }
++    /// SkateV: Skate's scoring publication for the host HUD (read-only).
++    pub fn score(&self) -> crate::scoring_runtime::View {
++        self.skater.scoring.view()
++    }
+     pub fn pose(&self) -> Pose {
+         let v = self.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()]
+             .rates
+diff --git a/crates/skate-host/src/scoring_runtime.rs b/crates/skate-host/src/scoring_runtime.rs
+index 415d808..60e7716 100644
+--- a/crates/skate-host/src/scoring_runtime.rs
++++ b/crates/skate-host/src/scoring_runtime.rs
+@@ -75,6 +75,42 @@ pub(crate) struct Runtime {
+     pub modified_trick: bool,
+     pub close_tricks: bool,
+ }
++/// SkateV: read-only publication snapshot for a foreign host's HUD.
++#[derive(Clone, Debug, Default)]
++pub struct View {
++    pub sequence_active: bool,
++    pub sequence_score: f32,
++    pub line_score: f32,
++    pub completed_lines: f32,
++    pub multiplier: f32,
++    pub line_timer: f32,
++    pub trick_name: String,
++    pub switch: bool,
++    pub fakie: bool,
++    pub nollie: bool,
++    pub clean: bool,
++    pub sketchy: bool,
++}
++impl Runtime {
++    /// SkateV: the scorer's own state, unchanged. No accounting happens here.
++    pub fn view(&self) -> View {
++        let s = &self.session.holder.snapshot;
++        View {
++            sequence_active: self.sequence_active,
++            sequence_score: self.sequence_score,
++            line_score: s.line,
++            completed_lines: s.completed_lines,
++            multiplier: self.session.combo.multiplier,
++            line_timer: self.session.line.points,
++            trick_name: self.trick_name.clone(),
++            switch: self.stance[0],
++            fakie: self.stance[1],
++            nollie: self.stance[2],
++            clean: self.clean,
++            sketchy: self.sketchy,
++        }
++    }
++}
+ impl Runtime {
+     pub fn load(data: &Collections) -> Result<Self, String> {
+         Ok(Self {

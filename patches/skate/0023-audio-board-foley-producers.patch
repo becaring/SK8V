@@ -1,0 +1,27 @@
+--- a/crates/skate-host/src/physics/bridge/audio.rs
++++ b/crates/skate-host/src/physics/bridge/audio.rs
+@@ -113,6 +113,13 @@ pub struct AudioInput {
+     pub left_foot_within_deck: u8,
+     pub right_foot_within_deck: u8,
+     pub skeleton_over: u8,
++    /// SkateV: board-foley producers of packet827A1B78, published by
++    /// fill824B0DA8: Collision3475 (packet148 bit8, variable614), State80
++    /// (packet152 bit5, variables769/776) and PhysOutSkeleton192/208
++    /// (packet288..308, variables268..280).
++    pub deck_contact: u8,
++    pub state_flag_80: bool,
++    pub foot_local_velocity: [[f32; 4]; 2],
+ }
+ 
+ impl Session {
+@@ -231,6 +238,10 @@ impl Session {
+             left_foot_within_deck: p.skeleton.flag_600,
+             right_foot_within_deck: p.skeleton.flag_601,
+             skeleton_over: p.skeleton.over_599,
++            deck_contact: p.collision.flag_3475,
++            state_flag_80: flags[80 - 52],
++            //82BF22A0: toe velocities in the physical board's frame.
++            foot_local_velocity: self.skater.foot_physical.output.local_velocity,
+         }
+     }
+ }

@@ -1,0 +1,137 @@
+diff --git a/crates/skate-host/src/physics/air_phase.rs b/crates/skate-host/src/physics/air_phase.rs
+index 34cfcb2..91f5332 100644
+--- a/crates/skate-host/src/physics/air_phase.rs
++++ b/crates/skate-host/src/physics/air_phase.rs
+@@ -117,6 +117,24 @@ pub(super) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) ->
+             info.cone_angle_z *= f32::from_bits(0x3ecc_cccd);
+         }
+         info.player_jumped = false;
++        // SkateV: observe the launch; apply an armed RetailQuirk one-shot
++        // start velocity only on the off-board centre-of-mass branch.
++        let com_branch = frame.frames_since_jump_correction_2576 >= 12
++            && skater.air_state.use_centre_of_mass_velocity;
++        let mut overridden = false;
++        if com_branch && let Some(v) = skater.skatev_launch_override.take() {
++            info.start_velocity = [v[0], v[1], v[2], info.start_velocity[3]];
++            overridden = true;
++        }
++        let com = skater.air_state.centre_of_mass_trajectory.velocity;
++        skater.skatev_last_launch = Some(super::skater::SkatevLaunch {
++            tick: physics.ticks,
++            start_velocity: [info.start_velocity[0], info.start_velocity[1], info.start_velocity[2]],
++            com_velocity: [com[0], com[1], com[2]],
++            com_branch,
++            jump_branch: frame.frames_since_jump_correction_2576 < 12,
++            overridden,
++        });
+         let input = input::selector_input(physics, skater)?;
+         skater.trajectory.launch(info, input, &physics.world)?;
+         skater.air_state.trajectory_query_countdown = 7;
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index 89c13fe..669431f 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -1,4 +1,5 @@
+ use super::{GamePhysics, PlayerControls, SkaterRuntime};
++pub use super::skater::SkatevLaunch;
+ use crate::{camera::CameraRuntime, graph_runtime::StockGraphs, input::ControllerInput};
+ use bevy::prelude::*;
+ use skate_data::skate_map::{Collision, Geometry, Rail, SkateMap};
+@@ -205,6 +206,28 @@ impl Session {
+             .map(|(t, p, n)| (*t, [p.x, p.y, p.z], [n.x, n.y, n.z]))
+             .collect()
+     }
++    /// SkateV: retail-quirk observation (Skate world units).
++    pub fn quirk_state(&self) -> QuirkState {
++        let deck = self.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()]
++            .rates
++            .linear_velocity;
++        let com = self.skater.air_state.centre_of_mass_trajectory.velocity;
++        QuirkState {
++            tick: self.physics.ticks,
++            state: format!("{:?}", self.skater.player_state.current()),
++            board_state: self.skater.skateboard_controller.fields.state_448,
++            deck_velocity: [deck.x, deck.y, deck.z],
++            com_trajectory_velocity: [com[0], com[1], com[2]],
++            use_com_velocity: self.skater.air_state.use_centre_of_mass_velocity,
++            last_launch: self.skater.skatev_last_launch,
++            override_armed: self.skater.skatev_launch_override.is_some(),
++        }
++    }
++    /// SkateV: arm (Some) or clear (None) the one-shot off-board launch
++    /// start velocity (Skate world, m/s) for RetailQuirk::BackwardsMan.
++    pub fn arm_offboard_launch(&mut self, velocity: Option<[f32; 3]>) {
++        self.skater.skatev_launch_override = velocity;
++    }
+     pub fn pose(&self) -> Pose {
+         let v = self.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()]
+             .rates
+@@ -234,6 +257,20 @@ impl Session {
+     }
+ }
+ 
++/// SkateV: retail-quirk observation snapshot.
++#[derive(Clone, Debug, Default)]
++pub struct QuirkState {
++    pub tick: u64,
++    pub state: String,
++    /// SkateboardController +448: board possession (1 carried, 2/3 released).
++    pub board_state: u32,
++    pub deck_velocity: [f32; 3],
++    pub com_trajectory_velocity: [f32; 3],
++    pub use_com_velocity: bool,
++    pub last_launch: Option<SkatevLaunch>,
++    pub override_armed: bool,
++}
++
+ /// Collision for `Session::install_collision`, built off the simulation.
+ pub struct PreparedCollision {
+     world: skate_core::physics::board_world::BoardWorld,
+diff --git a/crates/skate-host/src/physics/skater.rs b/crates/skate-host/src/physics/skater.rs
+index c6b31c4..df0137b 100644
+--- a/crates/skate-host/src/physics/skater.rs
++++ b/crates/skate-host/src/physics/skater.rs
+@@ -25,6 +25,22 @@ use skate_core::physics::{
+ use skate_data::collections::Collections;
+ use std::path::Path;
+ 
++/// SkateV: one observed known-air launch.
++#[derive(Clone, Copy, Debug, Default)]
++pub struct SkatevLaunch {
++    pub tick: u64,
++    /// Start velocity handed to the trajectory solver (Skate world, m/s).
++    pub start_velocity: [f32; 3],
++    /// The air state's centre-of-mass trajectory velocity at launch.
++    pub com_velocity: [f32; 3],
++    /// Launch took the off-board centre-of-mass branch.
++    pub com_branch: bool,
++    /// Launch took the jump-correction branch.
++    pub jump_branch: bool,
++    /// The SkateV one-shot override replaced the start velocity.
++    pub overridden: bool,
++}
++
+ #[derive(Resource)]
+ pub(crate) struct SkaterRuntime {
+     pub scoring: crate::scoring_runtime::Runtime,
+@@ -94,6 +110,11 @@ pub(crate) struct SkaterRuntime {
+     pub skeleton_output: SkeletonOutput,
+     pub skateboard_controller: super::skateboard_controller::SkateboardController,
+     pub board_possession: super::offboard::board_manager::Owner,
++    /// SkateV: last known-air launch, observed for retail-quirk work.
++    pub skatev_last_launch: Option<SkatevLaunch>,
++    /// SkateV: one-shot start velocity (Skate world) for the next off-board
++    /// (centre-of-mass branch) launch; armed by RetailQuirk::BackwardsMan.
++    pub skatev_launch_override: Option<[f32; 3]>,
+     pub board_possession_live: super::offboard::board_manager::runtime::LiveState,
+ }
+ 
+@@ -304,6 +325,8 @@ impl SkaterRuntime {
+             skeleton_output,
+             skateboard_controller: super::skateboard_controller::SkateboardController::new(),
+             board_possession: super::offboard::board_manager::Owner::load(&data)?,
++            skatev_last_launch: None,
++            skatev_launch_override: None,
+             board_possession_live: super::offboard::board_manager::runtime::LiveState::load(
+                 &data, physics,
+             )?,

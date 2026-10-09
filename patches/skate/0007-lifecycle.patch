@@ -1,0 +1,129 @@
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index c34f0d2..809a0d9 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -435,3 +435,5 @@ impl InputFrame {
+             .unwrap_or(0)
+     }
+ }
++
++pub mod lifecycle;
+diff --git a/crates/skate-host/src/physics/bridge/lifecycle.rs b/crates/skate-host/src/physics/bridge/lifecycle.rs
+new file mode 100644
+index 0000000..51855be
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/lifecycle.rs
+@@ -0,0 +1,87 @@
++//! SkateV lifecycle entry points (overlay patch 0007). Entry points only:
++//! nothing here changes how Skate simulates once it runs.
++//!
++//! The host enters Skate off the board, carrying it, through Skate's own
++//! manual-return path with an off-board checkpoint: the same
++//! `request_teleport` + `TeleportState::request_manual(.., on_board = false)`
++//! pair the session marker uses to return a player who placed the marker
++//! while walking (`session_marker::update`). Skate's `enter_after_teleport`
++//! then selects `BipedGround`, and `SetPhysicsState` starts the
++//! SkateboardController in its held state (`state_448 == 1`). Getting on the
++//! board from there is Skate's ordinary board action (Y), fed as controller
++//! input like any other press.
++use super::*;
++
++/// Skate's own state as the lifecycle needs it (read-only).
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct LifecycleView {
++    pub tick: u64,
++    /// `PhysicalStateId` (100 PhysicsGround .. 500 BipedGround .. 702 Teleporting).
++    pub state: u32,
++    /// SkateboardController +448: 0 riding / stopped, 1 held, 2 released,
++    /// 3 hidden, 4 retrieving.
++    pub board_possession: u32,
++    /// SkateboardController +452: the off-board hand-held controller runs.
++    pub controller_on: bool,
++    /// A teleport request is waiting for Skate's next input phase.
++    pub teleport_pending: bool,
++    /// Skate's own mount in progress: the animation attributes
++    /// `OB_Mounting` (processed 2480 bit 19) or `OB_DroppingBoard`
++    /// (processed 2476 bit 9) are published.
++    pub mounting: bool,
++}
++
++impl Session {
++    /// SkateV lifecycle: the skater stands at `spawn` (Skate world, ground
++    /// contact) facing `heading` (radians about Skate +Y), off the board with
++    /// the board in hand. The retained world and animation session are reused
++    /// exactly as `activate` reuses them.
++    pub fn activate_offboard(&mut self, spawn: [f32; 3], heading: f32) -> Result<Pose, String> {
++        self.input = ControllerInput::default();
++        self.markers.suspend();
++        if self.physics.ticks == 0 {
++            self.tick(Controls::default())?;
++        }
++        // A teleport Skate itself requested (bail recovery) must complete
++        // before a new one can be queued; let Skate consume it first.
++        let mut drain = 0;
++        while self.skater.player_input.pending_teleport().is_some() {
++            if drain == 60 {
++                return Err("Skate teleport still pending after 60 ticks".into());
++            }
++            self.tick(Controls::default())?;
++            drain += 1;
++        }
++        let mut transform = Mat4::from_rotation_translation(
++            Quat::from_rotation_y(heading),
++            Vec3::from_array(spawn),
++        )
++        .to_cols_array_2d();
++        transform[3][3] = 0.;
++        self.skater.player_input.request_teleport(transform)?;
++        self.skater.teleport_state.request_manual(transform, false);
++        // Bail recovery starts from here, not from an earlier entry elsewhere
++        // in Los Santos (whose collision is no longer loaded).
++        let stance = self.skater.animation.checkpoint_stance();
++        self.skater.respawn.skatev_restart(transform, stance);
++        for _ in 0..4 {
++            self.tick(Controls::default())?;
++        }
++        self.input = ControllerInput::default();
++        Ok(self.pose())
++    }
++
++    /// SkateV lifecycle: Skate's state and board possession.
++    pub fn lifecycle_view(&self) -> LifecycleView {
++        let controller = &self.skater.skateboard_controller.fields;
++        LifecycleView {
++            tick: self.physics.ticks,
++            state: self.skater.player_state.current() as u32,
++            board_possession: controller.state_448,
++            controller_on: controller.system_on_452,
++            teleport_pending: self.skater.player_input.pending_teleport().is_some(),
++            mounting: self.skater.player_input.processed.flags_2480 & 0x80000 != 0
++                || self.skater.player_input.processed.flags_2476 & 0x200 != 0,
++        }
++    }
++}
+diff --git a/crates/skate-host/src/physics/respawn.rs b/crates/skate-host/src/physics/respawn.rs
+index e2a8d06..8286d35 100644
+--- a/crates/skate-host/src/physics/respawn.rs
++++ b/crates/skate-host/src/physics/respawn.rs
+@@ -311,3 +311,21 @@ mod tests {
+         assert_eq!(result[3], source[3]);
+     }
+ }
++
++/// SkateV lifecycle (patch 0007): the checkpoint history restarted at a new
++/// entry point, exactly as `load` starts it for a new session there. SkateV
++/// relocates the one session across Los Santos while only a working set of
++/// collision around the player exists; history from an earlier entry lies
++/// outside it, where `Scene::location` (normal-world mode: always true) would
++/// still accept it. Settings are untouched.
++impl Runtime {
++    pub(crate) fn skatev_restart(&mut self, transform: Matrix, stance: u32) {
++        self.history = History::new(Candidate {
++            transform,
++            stance,
++            offboard: false,
++            score: 0.,
++        });
++        self.measurements = 0;
++    }
++}

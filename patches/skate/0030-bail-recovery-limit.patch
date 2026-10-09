@@ -1,0 +1,135 @@
+diff --git a/crates/skate-host/src/physics/bridge/bail.rs b/crates/skate-host/src/physics/bridge/bail.rs
+new file mode 100644
+index 0000000..8808f29
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/bail.rs
+@@ -0,0 +1,55 @@
++//! SkateV bail recovery (overlay patch 0030). The host's replacement for the
++//! automatic-reset time limit, and the WipeoutGround recovery state the host
++//! reads to report why a bail ended.
++use super::Session;
++
++/// WipeoutGround recovery state after the last `advance` (Skate seconds).
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub struct BailRecovery {
++    /// State+304: time since the wipeout began.
++    pub time: f32,
++    /// State+308: time the body has been at rest ("over").
++    pub settled_time: f32,
++    /// State+324: time since the last contact response.
++    pub response_time: f32,
++    /// State+566: the player pressed WipeOutRecover during this wipeout.
++    pub recover_pressed: bool,
++    /// State+568: a WipeOutRecover press is honoured (settled once, or
++    /// past the original 1.6 s).
++    pub recovery_eligible: bool,
++    /// State+570: the body was impaled.
++    pub impaled: bool,
++    /// State+569: the automatic reset is fading out.
++    pub automatic_pending: bool,
++    /// State+560 >= 0: the teleport countdown has started.
++    pub countdown: bool,
++    /// The time limit in force (the retail value or the host's).
++    pub maximum_time: f32,
++}
++
++impl Session {
++    /// Replaces physics_wipeout TeleportMaxTime: None restores the retail
++    /// value; f32::INFINITY removes the limit.
++    pub fn set_bail_maximum_time(&mut self, maximum_time: Option<f32>) {
++        self.skater.skatev_bail_maximum_time = maximum_time.filter(|t| !t.is_nan() && *t > 0.0);
++    }
++    /// The recovery state of the current (or last) wipeout.
++    pub fn bail_recovery(&self) -> BailRecovery {
++        let runtime = &self.skater.wipeout_state;
++        let s = &runtime.state;
++        BailRecovery {
++            time: s.time,
++            settled_time: s.settled_time,
++            response_time: s.response_time,
++            recover_pressed: s.reset_ever,
++            recovery_eligible: s.recovery_eligible,
++            impaled: s.ever_impaled,
++            automatic_pending: s.teleport_pending,
++            countdown: s.teleport_countdown >= 0,
++            maximum_time: self
++                .skater
++                .skatev_bail_maximum_time
++                .unwrap_or(runtime.retail_bail_maximum_time()),
++        }
++    }
++}
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index 1aa41c0..9b44180 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -4,6 +4,7 @@ use crate::{camera::CameraRuntime, graph_runtime::StockGraphs, input::Controller
+ use bevy::prelude::*;
+ use skate_data::skate_map::{Collision, Geometry, Rail, SkateMap};
+ use std::path::Path;
++pub mod bail;
+ pub mod hom;
+ pub mod hud;
+ pub use super::host_bodies::{CHARACTER_GROUP, HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+diff --git a/crates/skate-host/src/physics/skater.rs b/crates/skate-host/src/physics/skater.rs
+index 52228f3..69bcee6 100644
+--- a/crates/skate-host/src/physics/skater.rs
++++ b/crates/skate-host/src/physics/skater.rs
+@@ -119,6 +119,11 @@ pub(crate) struct SkaterRuntime {
+     /// SkateV Hall of Meat: Scoring2+200 as the host's WipeoutScorer last
+     /// published it (broken-bone slow-mo countdown active: 1.0, else 0.0).
+     pub skatev_broken_bone_duration: f32,
++    /// SkateV bail recovery (overlay patch 0030): the host's replacement for
++    /// physics_wipeout TeleportMaxTime (None: the retail value; infinity: no
++    /// time limit, so a bail ends when the body settles or on the player's
++    /// WipeOutRecover).
++    pub skatev_bail_maximum_time: Option<f32>,
+     /// SkateV: one-shot start velocity (Skate world) for the next off-board
+     /// (centre-of-mass branch) launch; armed by RetailQuirk::BackwardsMan.
+     pub skatev_launch_override: Option<[f32; 3]>,
+@@ -336,6 +341,7 @@ impl SkaterRuntime {
+             skatev_last_launch: None,
+             skatev_hall_of_meat: false,
+             skatev_broken_bone_duration: 0.0,
++            skatev_bail_maximum_time: None,
+             skatev_launch_override: None,
+             board_possession_live: super::offboard::board_manager::runtime::LiveState::load(
+                 &data, physics,
+diff --git a/crates/skate-host/src/physics/wipeout_states/mod.rs b/crates/skate-host/src/physics/wipeout_states/mod.rs
+index b24b264..acdf3de 100644
+--- a/crates/skate-host/src/physics/wipeout_states/mod.rs
++++ b/crates/skate-host/src/physics/wipeout_states/mod.rs
+@@ -25,6 +25,10 @@ pub(crate) struct WipeoutState {
+     prediction: prediction::Prediction,
+ }
+ impl WipeoutState {
++    /// SkateV patch 0030: physics_wipeout TeleportMaxTime as loaded.
++    pub(crate) fn retail_bail_maximum_time(&self) -> f32 {
++        self.settings.recovery.maximum_time
++    }
+     pub fn load(data: &Collections, assets: &Path, primary_bank_sha: &str) -> Result<Self, String> {
+         //Ctor82D3B1EC..B25C full64 handle hashes, verified against the stock keys.
+         let names = [
+diff --git a/crates/skate-host/src/physics/wipeout_states/update.rs b/crates/skate-host/src/physics/wipeout_states/update.rs
+index f1953c4..4f0a836 100644
+--- a/crates/skate-host/src/physics/wipeout_states/update.rs
++++ b/crates/skate-host/src/physics/wipeout_states/update.rs
+@@ -208,12 +208,17 @@ pub(crate) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) ->
+         );
+         state.board_move_frames = state.board_move_frames.wrapping_add(1);
+     }
++    // SkateV patch 0030: the host may replace the automatic-reset time limit.
++    let mut recovery = runtime.settings.recovery;
++    if let Some(maximum_time) = skater.skatev_bail_maximum_time {
++        recovery.maximum_time = maximum_time;
++    }
+     state.manage_recovery(
+         p.flags_2468,
+         p.flags_2472,
+         p.flags_2484,
+         p.timestep_2604,
+-        &runtime.settings.recovery,
++        &recovery,
+     );
+     let gravity = physics.settings.step.simulation.gravity_acceleration;
+     runtime.prediction.advance(

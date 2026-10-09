@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "repositories": [
+    {
+      "name": "2010-rust-rewrite-mashup",
+      "url": "https://github.com/chasmlol/2010-rust-rewrite-mashup.git",
+      "commit": "ab43b8a9e923bdc4ad7effb874f6efec155577f1",
+      "role": "primary-skate-adoption-source",
+      "license": "Apache-2.0",
+      "default_fetch": true,
+      "notes": "Known MW2 foreign-host integration. Its skate/Cargo.toml says the imported Skate baseline is cb79689."
+    },
+    {
+      "name": "skate-3-rust-engine-donor",
+      "directory": "skate-3-rust-engine-donor",
+      "url": "https://github.com/SK8-ENGINE/skate-3-rust-engine.git",
+      "commit": "cb7968930f14dad38457e98720d1a274e469eec2",
+      "role": "behavioral-oracle-donor-baseline",
+      "license": "HUD modules (apt_*, hud_runtime) and tools/asset_pipeline: Apache-2.0 by chasmlol's grant, 2026-10-07 (NOTICE); rest reference only. Repo GPL-3.0 from 8280fc4",
+      "default_fetch": true,
+      "notes": "Exact standalone commit cited by mashup skate/Cargo.toml."
+    },
+    {
+      "name": "skate-3-rust-engine-current",
+      "directory": "skate-3-rust-engine-current",
+      "url": "https://github.com/SK8-ENGINE/skate-3-rust-engine.git",
+      "commit": "60efdef86600d8d8d4feb4b7c608fa0efd0643d7",
+      "role": "newer-behavioral-reference",
+      "license": "GPL-3.0 from 8280fc4 (2026-10-04); this snapshot predates it. Reference only (NOTICE)",
+      "default_fetch": false,
+      "notes": "Newer reference snapshot; never auto-port behavior from this over the known mashup baseline."
+    },
+    {
+      "name": "rage-formats",
+      "url": "https://github.com/VIRUXE/rage-formats.git",
+      "commit": "0488fc99d2d911c4da59288e1286a559e2bc7d45",
+      "role": "RAGE resource/YBN parser",
+      "license": "Unlicense",
+      "default_fetch": true
+    },
+    {
+      "name": "rpf-archive-rs",
+      "url": "https://github.com/VIRUXE/rpf-archive-rs.git",
+      "commit": "edd77588ed7fcf3cdd51949e7d3e647204c76036",
+      "role": "RPF7 archive access",
+      "license": "Unlicense",
+      "default_fetch": true
+    },
+    {
+      "name": "rage-cli",
+      "url": "https://github.com/VIRUXE/rage-cli.git",
+      "commit": "d87aa3d6539ba9c98ebbcdce273317172663d67c",
+      "role": "retail-key extraction and archive preparation helper",
+      "license": "Unlicense",
+      "default_fetch": true
+    },
+    {
+      "name": "rage-render",
+      "url": "https://github.com/VIRUXE/rage-render.git",
+      "commit": "b62485d3e0172d8e2bbcfda5d00c59630bdf65f1",
+      "role": "rage-cli pinned dependency/reference",
+      "license": "Unlicense",
+      "default_fetch": true
+    },
+    {
+      "name": "iw4L",
+      "url": "https://github.com/vladtrc/iw4L.git",
+      "commit": "11514ea37d1e80d75bf2c1ba332bbd68fac5db4e",
+      "role": "foreign-host architecture reference",
+      "license": "Apache-2.0",
+      "default_fetch": false
+    },
+    {
+      "name": "CodeWalker",
+      "url": "https://github.com/dexyfex/CodeWalker.git",
+      "commit": "485d56bec00262ed7fa472261cce7bbc6202b96e",
+      "role": "RAGE format/world oracle only",
+      "license": "mixed/unclear at repository level; reference only",
+      "default_fetch": false
+    },
+    {
+      "name": "gta5-nativedb-data",
+      "url": "https://github.com/alloc8or/gta5-nativedb-data.git",
+      "commit": "424fb51b089049a9fbcebcc641500b1d44d255b4",
+      "role": "GTA native names/hashes reference",
+      "license": "verify before redistribution; reference data only",
+      "default_fetch": false
+    },
+    {
+      "name": "universal-modder",
+      "url": "https://github.com/rehan-remade/universal-modder.git",
+      "commit": "15d6f9d5fbd32de9b1884f29ddec3be9133bd912",
+      "role": "GTA Legacy ScriptHookV integration/reference",
+      "license": "MIT",
+      "default_fetch": false
+    }
+  ],
+  "generated_date": "2026-10-01"
+}

@@ -1,0 +1,100 @@
+diff --git a/crates/skate-core/src/physics/board_world.rs b/crates/skate-core/src/physics/board_world.rs
+index 9dc7c5b..2fac8d7 100644
+--- a/crates/skate-core/src/physics/board_world.rs
++++ b/crates/skate-core/src/physics/board_world.rs
+@@ -432,7 +432,8 @@ impl BoardWorld {
+                         && !internal
+                         && (coplanar_gap_contact(entry, pair.b, manifold.normal, &candidates, triangles, triangle_bounds)
+                             || stacked_sheet_lip(pair.b, manifold.normal, &candidates, triangles, triangle_bounds)
+-                            || wheel_scale_step(volume.body, pair.a, pair.b, manifold.normal, &candidates, triangles, triangle_bounds));
++                            || wheel_scale_step(volume.body, pair.a, pair.b, manifold.normal, &candidates, triangles, triangle_bounds)
++                            || deck_clears_face(volume.body, pair.a, manifold.normal, volume.linear_velocity, &entry.triangle.vertices));
+                     let internal = internal || gap;
+                     // SkateV diagnostic (HOST replays only): SKATEV_CONTACT_TRACE=1
+                     // prints non-floor static contacts (2: all) with their source
+@@ -773,17 +774,31 @@ fn wheel_scale_step(
+     }
+     let r = RETAIL_WHEEL_RADIUS;
+     let (dx, dz) = (contact_normal.x / lateral, contact_normal.z / lateral);
++    let wheel = matches!(
++        body,
++        CollisionBody::Board(BodyId::RightFrontWheel | BodyId::LeftFrontWheel | BodyId::RightBackWheel | BodyId::LeftBackWheel)
++    );
+     // The step's walkable top just beyond the contact (away from the board).
++    // Trucks and deck (patch 0034): the contact Skate reports for an
++    // underside meeting a lip's edge can sit centimetres above the lip's top
++    // (owner park, a half pipe's 3 cm floor slab on the asphalt stopped the
++    // board dead through the deck alone), so their lip top is searched down
++    // to the board's ground clearance below the touching point.
++    let lowest = if wheel {
++        contact.y - 0.01
++    } else {
++        contact.y.min(board_point.y) - (RETAIL_WHEEL_RADIUS - RETAIL_TRUCK_Y_POSITION)
++    };
+     let beyond = (contact.x - dx * 0.01, contact.z - dz * 0.01);
+     let Some(top) = walkable_surfaces(beyond.0, beyond.1, candidates, triangles, bounds)
+         .map(|(h, _, _)| h)
+-        .filter(|h| *h >= contact.y - 0.01 && *h <= contact.y + 0.05)
++        .filter(|h| *h >= lowest && *h <= contact.y + 0.05)
+         .max_by(f32::total_cmp)
+     else {
+         return false;
+     };
+     match body {
+-        CollisionBody::Board(BodyId::RightFrontWheel | BodyId::LeftFrontWheel | BodyId::RightBackWheel | BodyId::LeftBackWheel) => {
++        _ if wheel => {
+             // The wheel sphere's centre: the touching point one radius back
+             // along the contact normal.
+             let centre = board_point.y + contact_normal.y * r;
+@@ -793,6 +808,22 @@ fn wheel_scale_step(
+     }
+ }
+ 
++/// SkateV deck clearance (patch 0034; owner park, 2026-10-04: a half pipe's
++/// 2 cm coping bump, met by the deck at 43 degrees, stopped a 4.7 m/s drop-in
++/// dead). The deck stands the wheel clearance above the ground the wheels roll
++/// on, yet its fat triangles and Skate's one-tick contact prediction still
++/// report faces lying wholly below it. A face whose highest point is a wheel
++/// radius or more under the deck's touching point is passed over while the
++/// deck moves more sideways than down; support from below (normals within 30
++/// degrees of up, the lateral gate) and landings keep their contacts.
++fn deck_clears_face(body: CollisionBody, board_point: Vector3, contact_normal: Vector3, velocity: Vector3, face: &[Vector3; 3]) -> bool {
++    if !matches!(body, CollisionBody::Board(BodyId::Deck)) || contact_normal.x.hypot(contact_normal.z) < 0.5 {
++        return false;
++    }
++    let highest = face[0].y.max(face[1].y).max(face[2].y);
++    highest <= board_point.y - RETAIL_WHEEL_RADIUS && velocity.y >= -velocity.x.hypot(velocity.z)
++}
++
+ /// Walkable faces over (x, z): height there, normal, index.
+ fn walkable_surfaces<'a>(
+     x: f32,
+diff --git a/crates/skate-core/src/physics/board_world/tests.rs b/crates/skate-core/src/physics/board_world/tests.rs
+index 806a800..89cd7d5 100644
+--- a/crates/skate-core/src/physics/board_world/tests.rs
++++ b/crates/skate-core/src/physics/board_world/tests.rs
+@@ -470,4 +470,24 @@ fn wheels_roll_over_steps_below_their_axle_but_not_curbs() {
+     assert!(wheel_step(&w, deck, [-0.05, 0.088, 0.], [0., 0.018, 0.], [-1., 0.1, 0.]));
+     let w = step_world(0.075);
+     assert!(!wheel_step(&w, deck, [-0.05, 0.06, 0.], [0., 0.06, 0.], [-1., 0., 0.]));
++    // Patch 0034: the contact may sit above the lip top (Skate's margins).
++    let w = step_world(0.018);
++    assert!(wheel_step(&w, deck, [-0.05, 0.088, 0.], [0., 0.06, 0.], [-1., 0.1, 0.]));
++}
++
++#[test]
++fn deck_passes_over_faces_a_wheel_radius_below_it() {
++    let deck = CollisionBody::Board(BodyId::Deck);
++    let r = RETAIL_WHEEL_RADIUS;
++    let bump = [Vector3::new(0., 0., 0.), Vector3::new(0., 0.02, 0.02), Vector3::new(0., 0., 1.)];
++    let diagonal = Vector3::new(-0.68, 0.73, 0.);
++    let rolling = Vector3::new(4.7, -0.1, 0.);
++    // A 2 cm coping bump met at 43 degrees under a rolling deck.
++    assert!(deck_clears_face(deck, Vector3::new(0., 0.02 + r, 0.), diagonal, rolling, &bump));
++    // Not when the deck is down at the bump, lands steeply, or rests on it.
++    assert!(!deck_clears_face(deck, Vector3::new(0., 0.02 + r * 0.5, 0.), diagonal, rolling, &bump));
++    assert!(!deck_clears_face(deck, Vector3::new(0., 0.1, 0.), diagonal, Vector3::new(2., -5., 0.), &bump));
++    assert!(!deck_clears_face(deck, Vector3::new(0., 0.1, 0.), Vector3::new(-0.3, 0.95, 0.), rolling, &bump));
++    // Wheels and trucks are left to the wheel-scale step rule.
++    assert!(!deck_clears_face(CollisionBody::Board(BodyId::FrontTruck), Vector3::new(0., 0.1, 0.), diagonal, rolling, &bump));
+ }

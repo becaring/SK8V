@@ -1,0 +1,9 @@
+[package]
+name = "skatev-world-cache"
+version = "0.2.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rage-formats = { path = "../../upstream/rage-formats", default-features = false }
+svwc = { path = "../svwc" }

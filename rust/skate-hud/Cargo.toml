@@ -1,0 +1,17 @@
+[package]
+name = "skate-hud"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Skate 3's original APT trickdisplay HUD: donor HUD runtime compiled in place + SkateV glue (layout, flat draw list)"
+
+# The donor HUD modules (apt_vm, apt_movie, apt_display, apt_text, apt_scene,
+# hud_runtime) are compiled from upstream/skate-3-rust-engine-donor in place via
+# #[path]; nothing is copied. See NOTICE.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+png = "0.17"
