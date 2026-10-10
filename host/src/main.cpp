@@ -2355,7 +2355,15 @@ void LifecycleFrame(Session& s, const Config& cfg, bool f6) {
         }
         const bool wheel = BoardWeaponTick(s, player);
         if (wheel) Log("SkateV Legacy: board picked in the weapon wheel");
-        if (f6 || wheel) TryEnter(s, cfg, !f6);
+        // SkateMods: Y (E on the keyboard) with the board already in hand gets
+        // on too, so a refused or cancelled take-out can be tried again
+        // without picking the board in the wheel once more.
+        static bool s_yWas = false;
+        const bool y = (pad.buttons & 0x8000) != 0;
+        const bool yBoard = y && !s_yWas && s.boardWeaponWas && now >= s.suppressEnterUntil;
+        s_yWas = y;
+        if (yBoard) Log("SkateV Legacy: Y with the board in hand");
+        if (f6 || wheel || yBoard) TryEnter(s, cfg, !f6);
         // Refused (vehicle, water, ...): no invisible weapon left in hand.
         if (wheel && s.state == LifeState::Ready) Call<void>(gta::SET_CURRENT_PED_WEAPON, player, 0xA2719263, 1);
         break;
@@ -2376,6 +2384,10 @@ void LifecycleFrame(Session& s, const Config& cfg, bool f6) {
             break;
         }
         if (const char* why = lifecycle::Blocked(player, false, cfg.life)) {
+            // SkateMods: say why, and put the board away so picking it again
+            // in the wheel is a new take-out (it stayed in hand, unusable).
+            Notify(s, std::string("can't skate now: ") + why, 2500);
+            Call<void>(gta::SET_CURRENT_PED_WEAPON, player, 0xA2719263, 1);
             SetState(s, LifeState::Ready, why);
             break;
         }
