@@ -52,6 +52,10 @@ public:
     bool SetLipRule(bool enabled);
     bool SetDifficulty(int index);
     bool SetCameraType(int type);  // 0 Low, 1 High
+    bool SetGestures(const int (&up_down_left_right)[4]);  // catalog indices; all < 0: off
+    bool SetPosture(int profile);                // 0 none, 1 stiff, 2 slouch, 3 buff
+    bool SetRidingStyle(int style);              // 0 none, 1 Loose, 2 Gonzo, 3 Aggressive
+    bool SetEquipment(float truck, float wheel); // 0..1 each
     bool SetVerboseLog(bool enabled);
     bool SetSkitchStandoff(float metres);
     int SkitchVehicle() const;
@@ -92,6 +96,10 @@ private:
     SvSetLipRuleFn setLipRule_ = nullptr;
     SvSetDifficultyFn setDifficulty_ = nullptr;
     SvSetCameraTypeFn setCameraType_ = nullptr;
+    SvSetGesturesFn setGestures_ = nullptr;
+    SvSetPostureFn setPosture_ = nullptr;
+    SvSetRidingStyleFn setRidingStyle_ = nullptr;
+    SvSetEquipmentFn setEquipment_ = nullptr;
     SvSetVerboseLogFn setVerboseLog_ = nullptr;
     SvSetSkitchStandoffFn setSkitchStandoff_ = nullptr;
     SvSkitchVehicleFn skitchVehicle_ = nullptr;

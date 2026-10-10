@@ -1024,6 +1024,49 @@ pub unsafe extern "C" fn sv_set_camera_type(rt: *mut c_void, camera_type: u32) -
     })
 }
 
+/// Skate 3's d-pad gestures (overlay patch 0045): catalog indices 0..37 for
+/// d-pad up, down, left, right; any index 37 or above turns gestures off.
+/// Applied live and to every later session. Returns 1 when queued.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_set_gestures(rt: *mut c_void, up: u32, down: u32, left: u32, right: u32) -> u32 {
+    guard(0, || {
+        let Some(rt) = (unsafe { runtime(rt) }) else { return 0 };
+        let g = [up, down, left, right];
+        rt.jobs.send(Job::Gestures(g.iter().all(|v| *v < 37).then_some(g))).is_ok() as u32
+    })
+}
+
+/// Skate 3's posture (overlay patch 0047): 0 none, 1 stiff, 2 slouch, 3 buff.
+/// Applied live and to every later session. Returns 1 when queued.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_set_posture(rt: *mut c_void, profile: u32) -> u32 {
+    guard(0, || {
+        let Some(rt) = (unsafe { runtime(rt) }) else { return 0 };
+        (profile < 4 && rt.jobs.send(Job::Posture(profile)).is_ok()) as u32
+    })
+}
+
+/// Skate 3's riding style (overlay patch 0047): 0 none, 1 Loose, 2 Gonzo,
+/// 3 Aggressive. Applied live and to every later session. Returns 1 when queued.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_set_riding_style(rt: *mut c_void, style: u32) -> u32 {
+    guard(0, || {
+        let Some(rt) = (unsafe { runtime(rt) }) else { return 0 };
+        (style < 4 && rt.jobs.send(Job::RidingStyle(style)).is_ok()) as u32
+    })
+}
+
+/// Skate 3's board setup (overlay patch 0047): truck tightness and wheel
+/// hardness, 0..1 each (retail 0.7). Returns 1 when queued.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_set_equipment(rt: *mut c_void, truck: f32, wheel: f32) -> u32 {
+    guard(0, || {
+        let Some(rt) = (unsafe { runtime(rt) }) else { return 0 };
+        let ok = truck.is_finite() && wheel.is_finite();
+        (ok && rt.jobs.send(Job::Equipment(truck.clamp(0.0, 1.0), wheel.clamp(0.0, 1.0))).is_ok()) as u32
+    })
+}
+
 /// Skate 3's difficulty (overlay patch 0043): 0 easy, 1 normal, 2 hardcore,
 /// 3 motorized; applied live and to every later session. Returns 1 when queued.
 #[unsafe(no_mangle)]

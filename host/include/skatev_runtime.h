@@ -326,6 +326,15 @@ using SvSetLipRuleFn = std::uint32_t(__cdecl*)(void*, std::uint32_t);
 
 // sv_set_camera_type(rt, type): Skate 3's camera, 0 Low, 1 High (default). Export: sv_set_camera_type.
 using SvSetCameraTypeFn = std::uint32_t(__cdecl*)(void*, std::uint32_t);
+// sv_set_gestures(rt, up, down, left, right): Skate 3's d-pad gestures, catalog indices 0..36;
+// any index 37 or above turns them off. Export: sv_set_gestures.
+using SvSetGesturesFn = std::uint32_t(__cdecl*)(void*, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
+// sv_set_posture(rt, profile): 0 none, 1 stiff, 2 slouch, 3 buff. Export: sv_set_posture.
+using SvSetPostureFn = std::uint32_t(__cdecl*)(void*, std::uint32_t);
+// sv_set_riding_style(rt, style): 0 none, 1 Loose, 2 Gonzo, 3 Aggressive. Export: sv_set_riding_style.
+using SvSetRidingStyleFn = std::uint32_t(__cdecl*)(void*, std::uint32_t);
+// sv_set_equipment(rt, truck, wheel): truck tightness, wheel hardness, 0..1. Export: sv_set_equipment.
+using SvSetEquipmentFn = std::uint32_t(__cdecl*)(void*, float, float);
 // sv_set_difficulty(rt, index): Skate 3's physics_mode, 0 easy, 1 normal,
 // 2 hardcore, 3 motorized; live and for later sessions. Returns 1 when queued.
 // Export: sv_set_difficulty.

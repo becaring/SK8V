@@ -1,0 +1,29 @@
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -12,6 +12,7 @@ pub mod hud;
+ pub mod lips;
+ pub mod difficulty;
+ pub mod camera_type;
++pub mod gestures;
+ pub use super::host_bodies::{CHARACTER_GROUP, HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+ 
+ /// Synthetic HOST regression for the shared moving-entity query boundary.
+diff --git a/crates/skate-host/src/physics/bridge/gestures.rs b/crates/skate-host/src/physics/bridge/gestures.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/gestures.rs
+@@ -0,0 +1,13 @@
++//! SkateV d-pad gestures (overlay patch 0045): retail's player gesture
++//! preferences, which CharacterGesture reads when a gesture starts.
++use super::Session;
++
++impl Session {
++    /// Catalog indices (0..37) for d-pad [up, down, left, right]; None turns gestures off.
++    /// False (unchanged) when an index is out of range.
++    pub fn set_gestures(&mut self, gestures: Option<[u32; 4]>) -> bool {
++        if gestures.is_some_and(|g| g.iter().any(|v| *v >= 37)) { return false; }
++        self.physics.set_gesture_preferences(gestures);
++        true
++    }
++}

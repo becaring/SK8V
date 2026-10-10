@@ -82,6 +82,11 @@ struct Config {
     bool lipRule = true;           // LipRule=1: stall on a ramp lip only riding up slowly; 0 retail grind admission
     int difficulty = 0;            // Difficulty=Easy|Normal|Hardcore|Motorized: Skate 3's physics_mode (index)
     int cameraType = 1;            // Camera=Low|High: Skate 3's stock camera graph branch (0 Low, 1 High)
+    int gestures[4] = {23, 7, 24, 22}; // EmoteUp/Down/Left/Right: d-pad gesture per direction (kGestures index, -1 None)
+    int posture = 0;               // Posture=Normal|Stiff|Slouch|Buff: Skate 3's riding posture (kPostures index)
+    int ridingStyle = 0;           // RidingStyle=Default|Loose|Gonzo|Aggressive: Skate 3's riding animations (kRidingStyles index)
+    float truckTightness = 0.7f;   // TruckTightness: 0 loose .. 1 tight (Skate 3 default 0.7)
+    float wheelHardness = 0.7f;    // WheelHardness: 0 soft .. 1 hard (Skate 3 default 0.7)
     int skaterTriangles = 3000;
     bool dynamicWorld = true;
     float dynamicRadius = 35.0f;
@@ -124,7 +129,6 @@ struct Config {
     bool backwardsMan = true;
     unsigned backwardsManChord = 0x00C0; // L3 + R3
     unsigned putAwayHoldMs = 600; // Y held this long while skating puts the board away (0 = off)
-    bool backwardsManBackward = true;
     unsigned backwardsManRemountDelay = 6;
     // Seamless lifecycle (ledger P0-1): controller board action, guards,
     // background preparation. The menu's "Skate on / off" is the manual activation.
@@ -184,6 +188,23 @@ void Store(Config& c, const std::string& v) { Parse(v, c.*Field); }
 std::string Speech(const std::string& v) { return v == "0" ? "" : v; }
 
 const char* const kDifficulties[] = {"Easy", "Normal", "Hardcore", "Motorized"};
+// Skate 3's 37 d-pad gestures in catalog order (overlay patch 0045): INI value and menu name.
+const char* const kGestures[37] = {
+    "Air guitar", "Airplane", "Boxing", "Bruce Lee", "Check time", "Devil horns",
+    "Double guns", "Dunno", "Finger wag", "Fists", "Bicep flex", "Flip table",
+    "Fonz", "Freedom", "Fist shake", "Get away", "Get outta here", "Handcuffs",
+    "High pump", "Low pump", "Rewind", "Peace", "Point", "Raise the roof",
+    "Shaka", "Shrug", "Point to the sky", "Snap", "Soul arch", "Spock",
+    "Surf's up", "Swing high", "Swing low", "Throw arms", "Thumbs down", "Wings",
+    "Yard sale"};
+const char* const kGestureKeys[4] = {"EmoteUp", "EmoteDown", "EmoteLeft", "EmoteRight"};
+const char* const kPostures[] = {"Normal", "Stiff", "Slouch", "Buff"};
+const char* const kRidingStyles[] = {"Default", "Loose", "Gonzo", "Aggressive"};
+int GestureIndex(const std::string& v) {
+    for (int i = 0; i < 37; ++i)
+        if (menu::SameText(v, kGestures[i])) return i;
+    return -1;
+}
 
 const Key kKeys[] = {
     {"DataRoot", Store<&Config::dataRoot>},
@@ -219,6 +240,22 @@ const Key kKeys[] = {
              if (menu::SameText(v, kDifficulties[i])) c.difficulty = i;
      }},
     {"Camera", [](Config& c, const std::string& v) { c.cameraType = menu::SameText(v, "Low") ? 0 : 1; }},
+    {"EmoteUp", [](Config& c, const std::string& v) { c.gestures[0] = GestureIndex(v); }},
+    {"EmoteDown", [](Config& c, const std::string& v) { c.gestures[1] = GestureIndex(v); }},
+    {"EmoteLeft", [](Config& c, const std::string& v) { c.gestures[2] = GestureIndex(v); }},
+    {"EmoteRight", [](Config& c, const std::string& v) { c.gestures[3] = GestureIndex(v); }},
+    {"Posture", [](Config& c, const std::string& v) {
+         c.posture = 0;
+         for (int i = 0; i < 4; ++i)
+             if (menu::SameText(v, kPostures[i])) c.posture = i;
+     }},
+    {"RidingStyle", [](Config& c, const std::string& v) {
+         c.ridingStyle = 0;
+         for (int i = 0; i < 4; ++i)
+             if (menu::SameText(v, kRidingStyles[i])) c.ridingStyle = i;
+     }},
+    {"TruckTightness", Store<&Config::truckTightness>},
+    {"WheelHardness", Store<&Config::wheelHardness>},
     {"SkitchStandoff", Store<&Config::skitchStandoff>},
     {"SkaterTriangles", Store<&Config::skaterTriangles>},
     {"DynamicWorld", Store<&Config::dynamicWorld>},
@@ -245,7 +282,6 @@ const Key kKeys[] = {
     {"BackwardsMan", Store<&Config::backwardsMan>},
     {"BackwardsManChord", Store<&Config::backwardsManChord>},
     {"Line", Store<&Config::line>},
-    {"BackwardsManDirection", [](Config& c, const std::string& v) { c.backwardsManBackward = v != "Forward"; }},
     {"BackwardsManRemountDelay", Store<&Config::backwardsManRemountDelay>},
     {"MenuButton", [](Config& c, const std::string& v) { Parse(v, c.life.menuButton); }},
     {"PutAwayHoldMs", Store<&Config::putAwayHoldMs>},
@@ -515,6 +551,7 @@ struct Session {
     // Radio banner: the audible track shown last (0 none), when to show the
     // station alone if no track turns up, last poll.
     int radioTrack = 0;
+    DWORD backBlockUntil = 0;  // GTA's interaction menu blocked until (main loop)
     DWORD radioDue = 0;
     DWORD radioPoll = 0;
     DynamicWorld world;
@@ -1352,8 +1389,8 @@ void GameplayCam(Session& s) {
     Call<void>(gta::RENDER_SCRIPT_CAMS, 0, 1, kAimBlendMs, 1, 0, 0);
 }
 
-// Called with the pad about to go to Skate. Gun away: only the radio (d-pad
-// left/right) is taken. Gun out: GTA runs the ped's player tasks, so its own
+// Called with the pad about to go to Skate. Gun away: only the radio (LB +
+// d-pad left/right) is taken. Gun out: GTA runs the ped's player tasks, so its own
 // aim, attack, reload and weapon wheel act on the pad as on foot: LB/RB stand in
 // for INPUT_AIM / INPUT_ATTACK (the triggers stay Skate's grabs), the d-pad
 // changes weapon, B reloads; while aiming only the left stick and A (push)
@@ -1364,6 +1401,16 @@ void BoardControls(Session& s, const Config& cfg, SvPad& pad) {
     const std::uint16_t released = s.aimPrevButtons & ~buttons;
     s.aimPrevButtons = buttons;
     RadioTick(s);
+    // Gun away, LB + d-pad left/right steps the radio (Skate 3's TRAX layout; LB + up/down is
+    // Skate's session marker). The plain d-pad is Skate's gestures; a direction set to None
+    // does not reach Skate.
+    if (!s.armed && (buttons & 0x0100)) {
+        if (pressed & 0x0008) StepRadio(s, 1);  // right: next station
+        if (pressed & 0x0004) StepRadio(s, -1); // left: previous
+    }
+    if (!(buttons & 0x0100))
+        for (int d = 0; d < 4; ++d)
+            if (cfg.gestures[d] < 0) pad.buttons &= static_cast<std::uint16_t>(~(1u << d));
     if (!cfg.boardAim || !cfg.posePed) return;
 
     // GunButton held opens GTA's weapon wheel with the gun out; the right
@@ -1503,11 +1550,7 @@ void BoardControls(Session& s, const Config& cfg, SvPad& pad) {
         s.gunChordUsed = false;
     }
 
-    if (!s.armed) {
-        if (pressed & 0x0004) StepRadio(s, 1);  // d-pad left: next station (GTA's car layout)
-        if (pressed & 0x0008) StepRadio(s, -1); // d-pad right: previous
-        return;
-    }
+    if (!s.armed) return;
 
     const std::string_view state(s.last.state_utf8);
     // GTA's own weapon icon and ammo count, and its reticle while aiming.
@@ -1893,10 +1936,6 @@ void UpdateActive(Session& s, const Config& cfg, const SvPad& pad) {
     if (!cfg.drawBoard || boardPose.bone_count != 7) boardnative::Tick(false, SvBoardPose{});
     if (cfg.drawSkater && !nativeBoard) DrawBoardMesh();
     if (g_quirkRequested.exchange(false) && cfg.backwardsMan) g_runtime.TriggerQuirk(0);
-    SvQuirkState quirk{};
-    if (g_runtime.QuirkState(quirk) && quirk.assist_phase != 0) {
-        Text(quirk.assist_phase == 6 ? "BACKWARDS MAN" : "backwards man...", 0.5f, 0.2f, 0.55f, 255, 120, 40, true);
-    }
     if (cfg.showDebug) { // dev only; the player sees hud_overlay
         SvScoreState score{};
         g_runtime.Score(score);
@@ -2133,7 +2172,7 @@ void ApplyQuirk() {
     q.chord = c.backwardsManChord;
     q.remount_delay = c.backwardsManRemountDelay;
     q.model = 2; // Retail, the only model the runtime has
-    q.backward = c.backwardsManBackward ? 1u : 0u;
+    q.backward = 1;
     g_runtime.ConfigureQuirk(q);
 }
 
@@ -2150,6 +2189,16 @@ std::string LimitText(float v) {
     return v < 0.0f ? "Skate's own" : v == 0.0f ? "None" : Fixed("%g s")(v);
 }
 
+// One d-pad direction's gesture: None or one of kGestures.
+menu::Item Emote(const char* label, int direction, const Config& D) {
+    std::vector<std::string> values{"None"};
+    values.insert(values.end(), std::begin(kGestures), std::end(kGestures));
+    menu::Item i = menu::Choice(label, kGestureKeys[direction], values, values,
+                                Bound(kGestureKeys[direction], [] { g_runtime.SetGestures(g_config.gestures); }));
+    i.def = D.gestures[direction] < 0 ? "None" : kGestures[D.gestures[direction]];
+    return i;
+}
+
 std::vector<menu::Page> MenuPages(Session& s) {
     using namespace menu;
     const Config D{};
@@ -2163,6 +2212,17 @@ std::vector<menu::Page> MenuPages(Session& s) {
                Bound("Difficulty", [] { g_runtime.SetDifficulty(g_config.difficulty); })),
         Choice("Camera", "Camera", {"High", "Low"}, {"High (Skate 3 default)", "Low"},
                Bound("Camera", [] { g_runtime.SetCameraType(g_config.cameraType); })),
+        Emote("Emote: d-pad up", 0, D), Emote("Emote: d-pad down", 1, D),
+        Emote("Emote: d-pad left", 2, D), Emote("Emote: d-pad right", 3, D),
+        Choice("Posture", "Posture", {"Normal", "Stiff", "Slouch", "Buff"}, {"Normal", "Stiff", "Slouch (hunched)", "Buff"},
+               Bound("Posture", [] { g_runtime.SetPosture(g_config.posture); })),
+        Choice("Riding style", "RidingStyle", {"Default", "Loose", "Gonzo", "Aggressive"},
+               {"Default", "Loose", "Gonzo", "Aggressive"},
+               Bound("RidingStyle", [] { g_runtime.SetRidingStyle(g_config.ridingStyle); })),
+        Number("Truck tightness", "TruckTightness", D.truckTightness, 0, 1, 0.05f, Fixed("%.2f"),
+               Bound("TruckTightness", [] { g_runtime.SetEquipment(g_config.truckTightness, g_config.wheelHardness); })),
+        Number("Wheel hardness", "WheelHardness", D.wheelHardness, 0, 1, 0.05f, Fixed("%.2f"),
+               Bound("WheelHardness", [] { g_runtime.SetEquipment(g_config.truckTightness, g_config.wheelHardness); })),
         Flag("Ramp lip rule", "LipRule", D.lipRule, Bound("LipRule", [] { g_runtime.SetLipRule(g_config.lipRule); })),
         Number("Air time limit", "AirTimeLimit", D.airTimeLimit, -1, 120, 5, LimitText,
                Bound("AirTimeLimit", [] { g_runtime.SetAirLimit(g_config.airTimeLimit); })),
@@ -2210,8 +2270,6 @@ std::vector<menu::Page> MenuPages(Session& s) {
 
     pages.push_back({"BackwardsMan", {
         Flag("BackwardsMan assist", "BackwardsMan", D.backwardsMan, Bound("BackwardsMan", ApplyQuirk)),
-        Choice("Direction", "BackwardsManDirection", {"Backward", "Forward"}, {"Backward", "Forward"},
-               Bound("BackwardsManDirection", ApplyQuirk)),
         Number("Remount delay", "BackwardsManRemountDelay", static_cast<float>(D.backwardsManRemountDelay), 0, 30, 1, Fixed("%.0f"),
                Bound("BackwardsManRemountDelay", ApplyQuirk)),
         Action("Trigger now", [&s] {
@@ -2332,6 +2390,14 @@ void ScriptMain() {
              g_runtime.SetDifficulty(cfg.difficulty) ? "runtime option present" : "runtime option absent");
         Logf("SkateV Legacy: camera %s (%s)", cfg.cameraType == 0 ? "Low" : "High",
              g_runtime.SetCameraType(cfg.cameraType) ? "runtime option present" : "runtime option absent");
+        Logf("SkateV Legacy: emotes up %d down %d left %d right %d (%s)", cfg.gestures[0], cfg.gestures[1],
+             cfg.gestures[2], cfg.gestures[3],
+             g_runtime.SetGestures(cfg.gestures) ? "runtime option present" : "runtime option absent");
+        Logf("SkateV Legacy: posture %s, riding style %s, trucks %.2f, wheels %.2f (%s)", kPostures[cfg.posture],
+             kRidingStyles[cfg.ridingStyle], cfg.truckTightness, cfg.wheelHardness,
+             g_runtime.SetPosture(cfg.posture) && g_runtime.SetRidingStyle(cfg.ridingStyle) &&
+                     g_runtime.SetEquipment(cfg.truckTightness, cfg.wheelHardness)
+                 ? "runtime option present" : "runtime option absent");
         g_runtime.SetVerboseLog(cfg.verboseLog);
     }
 
@@ -2411,7 +2477,15 @@ void ScriptMain() {
             Text(s.message.c_str(), 0.5f, 0.88f, 0.4f, 255, 255, 255, true);
         }
         hudoverlay::Tick(s.state == LifeState::Skating);
-        if (s.board.Pressed(RawPadButtons(), cfg.life.menuButton)) g_menuToggle.store(true);
+        const auto raw = static_cast<std::uint16_t>(RawPadButtons());
+        if (s.board.Pressed(raw, cfg.life.menuButton)) g_menuToggle.store(true);
+        // GTA's interaction menu (INPUT_INTERACTION_MENU, Back) shares Back with the board's
+        // weapon wheel and the menu chord: blocked while either is held and just after.
+        const bool chord = cfg.life.menuButton && (raw & cfg.life.menuButton) == cfg.life.menuButton;
+        if (chord || menu::IsOpen() || (s.state == LifeState::Skating && (raw & cfg.gunButton)))
+            s.backBlockUntil = GetTickCount() + 500;
+        if (static_cast<int>(GetTickCount() - s.backBlockUntil) < 0)
+            for (int group : {0, 2}) Call<void>(gta::DISABLE_CONTROL_ACTION, group, 244, 1);
         if (g_menuToggle.exchange(false)) {
             if (recordsui::Showing()) recordsui::NextPage();  // '/' also closes the records board
             else menu::Toggle();

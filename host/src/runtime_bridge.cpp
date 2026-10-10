@@ -46,6 +46,10 @@ bool RuntimeBridge::Load(const wchar_t* dllPath, const std::string& dataRoot, co
     sym(setLipRule_, "sv_set_lip_rule");
     sym(setDifficulty_, "sv_set_difficulty");
     sym(setCameraType_, "sv_set_camera_type");
+    sym(setGestures_, "sv_set_gestures");
+    sym(setPosture_, "sv_set_posture");
+    sym(setRidingStyle_, "sv_set_riding_style");
+    sym(setEquipment_, "sv_set_equipment");
     sym(setVerboseLog_, "sv_set_verbose_log");
     sym(setSkitchStandoff_, "sv_set_skitch_standoff");
     sym(skitchVehicle_, "sv_skitch_vehicle");
@@ -205,6 +209,27 @@ bool RuntimeBridge::SetAirLimit(float seconds) {
 
 bool RuntimeBridge::SetLipRule(bool enabled) {
     return runtime_ && setLipRule_(runtime_, enabled ? 1u : 0u) != 0;
+}
+
+// The engine takes all four directions or none: a direction left empty gets
+// gesture 0 here and the ASI keeps its d-pad press from Skate (BoardControls).
+bool RuntimeBridge::SetGestures(const int (&g)[4]) {
+    if (!runtime_ || !setGestures_) return false;
+    const bool any = g[0] >= 0 || g[1] >= 0 || g[2] >= 0 || g[3] >= 0;
+    const auto at = [&](int i) { return static_cast<std::uint32_t>(!any ? 37 : g[i] < 0 ? 0 : g[i]); };
+    return setGestures_(runtime_, at(0), at(1), at(2), at(3)) != 0;
+}
+
+bool RuntimeBridge::SetPosture(int profile) {
+    return runtime_ && setPosture_ && profile >= 0 && setPosture_(runtime_, static_cast<std::uint32_t>(profile)) != 0;
+}
+
+bool RuntimeBridge::SetRidingStyle(int style) {
+    return runtime_ && setRidingStyle_ && style >= 0 && setRidingStyle_(runtime_, static_cast<std::uint32_t>(style)) != 0;
+}
+
+bool RuntimeBridge::SetEquipment(float truck, float wheel) {
+    return runtime_ && setEquipment_ && setEquipment_(runtime_, truck, wheel) != 0;
 }
 
 bool RuntimeBridge::SetCameraType(int type) {

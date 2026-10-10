@@ -75,6 +75,14 @@ pub enum Job {
     LipRule(bool),
     Difficulty(u32),
     CameraType(u32),
+    /// D-pad gestures [up, down, left, right] (None: off).
+    Gestures(Option<[u32; 4]>),
+    /// Posture profile: 0 none, 1 stiff, 2 slouch, 3 buff.
+    Posture(u32),
+    /// Riding style: 0 none, 1 Loose, 2 Gonzo, 3 Aggressive.
+    RidingStyle(u32),
+    /// Truck tightness, wheel hardness (0..1).
+    Equipment(f32, f32),
     /// Metres behind a car's rear the skitch grab line sits.
     SkitchStandoff(f32),
     /// Play a showcase line (`line.rs`) from its start while skating.
@@ -686,6 +694,7 @@ fn run(
     let mut lip_rule = true;
     let mut difficulty = 0u32;
     let mut camera_type = 1u32;
+    let mut prefs = SkaterPrefs::default();
     let mut last_speed = 0.0f32;
     let mut last_root = bevy_math::Vec3::ZERO;
     let mut perf = Perf::new();
@@ -755,7 +764,7 @@ fn run(
             };
             match result {
                 Ok(mut s) => {
-                    apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty, camera_type);
+                    apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty, camera_type, prefs);
                     session = Some(s);
                     life(shared, |l| {
                         l.session_builds += 1;
@@ -804,7 +813,7 @@ fn run(
                             shared,
                             log,
                         )?;
-                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty, camera_type);
+                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty, camera_type, prefs);
                         builder_jobs = Some(sender);
                         session = Some(s);
                         audio_state = crate::audio::map::State::default();
@@ -974,6 +983,34 @@ fn run(
                     camera_type = t;
                     if let Some(s) = session.as_mut() {
                         s.set_camera_type(t);
+                    }
+                }
+                Job::Gestures(g) => {
+                    log(&format!("gestures: {g:?}"));
+                    prefs.gestures = g;
+                    if let Some(s) = session.as_mut() {
+                        s.set_gestures(g);
+                    }
+                }
+                Job::Posture(p) => {
+                    log(&format!("posture: {p}"));
+                    prefs.posture = p;
+                    if let Some(s) = session.as_mut() {
+                        s.set_posture(p);
+                    }
+                }
+                Job::RidingStyle(style) => {
+                    log(&format!("riding style: {style}"));
+                    prefs.style = style;
+                    if let Some(s) = session.as_mut() {
+                        s.set_riding_style(style);
+                    }
+                }
+                Job::Equipment(truck, wheel) => {
+                    log(&format!("equipment: truck tightness {truck:.2}, wheel hardness {wheel:.2}"));
+                    prefs.equipment = (truck, wheel);
+                    if let Some(s) = session.as_mut() {
+                        s.set_equipment(truck, wheel);
                     }
                 }
                 Job::PhysicsLevel(level) => pending_live = Some(level),
@@ -1160,7 +1197,7 @@ fn run(
                     log,
                 ) {
                     Ok((mut s, sender)) => {
-                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty, camera_type);
+                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty, camera_type, prefs);
                         builder_jobs = Some(sender);
                         session = Some(s);
                         audio_state = crate::audio::map::State::default();
@@ -1686,13 +1723,33 @@ fn life(shared: &Mutex<Shared>, f: impl FnOnce(&mut LifecycleShared)) {
     f(&mut shared.lock().unwrap().lifecycle);
 }
 
+/// The skater's own preferences (overlay patches 0045, 0047), kept across sessions.
+#[derive(Clone, Copy)]
+struct SkaterPrefs {
+    gestures: Option<[u32; 4]>,
+    posture: u32,
+    style: u32,
+    equipment: (f32, f32),
+}
+
+impl Default for SkaterPrefs {
+    fn default() -> Self {
+        // Retail's reset values: no gestures, posture or style, 0.7 trucks and wheels.
+        Self { gestures: None, posture: 0, style: 0, equipment: (0.7, 0.7) }
+    }
+}
+
 /// The host settings a new session starts with; later changes are applied
 /// by their jobs (plain session fields, kept across activations).
 fn apply_settings(s: &mut Session, hall_of_meat: bool, bail: Option<f32>, air: Option<f32>, lip: bool, difficulty: u32,
-                  camera_type: u32) {
+                  camera_type: u32, prefs: SkaterPrefs) {
     s.set_hall_of_meat(hall_of_meat);
     s.set_difficulty(difficulty);
     s.set_camera_type(camera_type);
+    s.set_gestures(prefs.gestures);
+    s.set_posture(prefs.posture);
+    s.set_riding_style(prefs.style);
+    s.set_equipment(prefs.equipment.0, prefs.equipment.1);
     s.set_bail_maximum_time(bail);
     s.set_air_time_limit(air);
     s.set_lip_rule(lip);

@@ -1,0 +1,28 @@
+diff --git a/crates/skate-host/src/physics/animation_phase.rs b/crates/skate-host/src/physics/animation_phase.rs
+--- a/crates/skate-host/src/physics/animation_phase.rs
++++ b/crates/skate-host/src/physics/animation_phase.rs
+@@ -332,6 +332,24 @@
+     ) {
+         action_intents.insert(intent.name, intent.value);
+     }
++    // SkateV (overlay patch 0046): the d-pad gesture inputs the stock OnBoard
++    // ActionGraph copies to the motion graph (GestureXStart on the press,
++    // GestureXHeld while down). The port has no producer for them; the d-pad is
++    // stock actions 74..77 (Button0..3: up, down, left, right), raw bits 27..24.
++    let words = controls.controller.words();
++    for (bit, start, held) in [
++        (27, "GestureUpStart", "GestureUpHeld"),
++        (26, "GestureDownStart", "GestureDownHeld"),
++        (25, "GestureLeftStart", "GestureLeftHeld"),
++        (24, "GestureRightStart", "GestureRightHeld"),
++    ] {
++        if words[13] & (1 << bit) != 0 {
++            action_intents.insert(held, 1.0);
++            if words[6] & (1 << bit) == 0 {
++                action_intents.insert(start, 1.0);
++            }
++        }
++    }
+     let mut output = AnimationPhaseOutput::new();
+     skater.animation.advance(
+         graphs,

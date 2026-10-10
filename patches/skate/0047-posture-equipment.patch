@@ -1,0 +1,45 @@
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -13,6 +13,7 @@ pub mod lips;
+ pub mod difficulty;
+ pub mod camera_type;
+ pub mod gestures;
++pub mod preferences;
+ pub use super::host_bodies::{CHARACTER_GROUP, HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+ 
+ /// Synthetic HOST regression for the shared moving-entity query boundary.
+diff --git a/crates/skate-host/src/physics/bridge/preferences.rs b/crates/skate-host/src/physics/bridge/preferences.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/preferences.rs
+@@ -0,0 +1,29 @@
++//! SkateV skater preferences (overlay patch 0047): retail's posture
++//! profile, riding style and board equipment, which nothing in the port sets.
++use super::Session;
++
++impl Session {
++    /// Posture profile: 0 none, 1 stiff, 2 slouch, 3 buff. The stock motion
++    /// graph applies it from the next tree that requests posture. False
++    /// (unchanged) otherwise.
++    pub fn set_posture(&mut self, profile: u32) -> bool {
++        if profile > 3 { return false; }
++        self.skater.animation.motion.animation.posture.set_profile(profile);
++        true
++    }
++    /// Riding style (retail CAC): 0 none, 1 Loose, 2 Gonzo, 3 Aggressive; the
++    /// stock ground graph picks its riding variants by it. False otherwise.
++    pub fn set_riding_style(&mut self, style: u32) -> bool {
++        if style > 3 { return false; }
++        let natural = self.skater.animation.natural_stance();
++        self.skater.animation.set_customisation(natural, style);
++        true
++    }
++    /// Truck tightness and wheel hardness, 0..1 (retail default 0.7 each).
++    /// False (unchanged) for a non-finite value.
++    pub fn set_equipment(&mut self, truck: f32, wheel: f32) -> bool {
++        if !truck.is_finite() || !wheel.is_finite() { return false; }
++        self.physics.set_equipment_preferences(truck, wheel);
++        true
++    }
++}
