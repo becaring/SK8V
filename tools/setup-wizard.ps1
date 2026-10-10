@@ -12,14 +12,15 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Self = $PSCommandPath
 
 # The copy tools\get-python.ps1 downloaded, else a python.exe on PATH (not the Microsoft Store stub)
-# that is 3.11+ with numpy and Pillow. $null when there is none.
+# that is 3.11+ with numpy and Pillow and whose DLL-backed modules load (a player's Anaconda Python run
+# outside its environment had numpy but no ctypes: "DLL load failed while importing _ctypes"). $null when there is none.
 function Find-Python {
   $bundled = Join-Path $Root 'python\python.exe'
   if (Test-Path $bundled) { return $bundled }
   $ErrorActionPreference = 'Continue'  # under Stop, 5.1 turns the probe's redirected stderr into an exception
   Get-Command python.exe -CommandType Application -All -ErrorAction SilentlyContinue |
     Where-Object { $_.Source -notmatch '\\WindowsApps\\' } | ForEach-Object Source |
-    Where-Object { & $_ -c 'import sys, numpy, PIL; sys.exit(sys.version_info < (3, 11))' 2>$null; $LASTEXITCODE -eq 0 } |
+    Where-Object { & $_ -c 'import sys, ctypes, hashlib, zlib, xml.etree.ElementTree, numpy, PIL.Image; sys.exit(sys.version_info < (3, 11))' 2>$null; $LASTEXITCODE -eq 0 } |
     Select-Object -First 1
 }
 
