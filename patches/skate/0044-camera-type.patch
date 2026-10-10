@@ -1,0 +1,57 @@
+diff --git a/crates/skate-host/src/physics/camera_output.rs b/crates/skate-host/src/physics/camera_output.rs
+index 18ec2e7..54be5cf 100644
+--- a/crates/skate-host/src/physics/camera_output.rs
++++ b/crates/skate-host/src/physics/camera_output.rs
+@@ -11,6 +11,11 @@ use skate_core::{
+     physics::centre_of_mass_filter::CentreOfMassOutput,
+ };
+ 
++/// The player's camera choice (SkateV, overlay patch 0044): graph type 0 Low,
++/// 1 High (retail's default). Set through `Session::set_camera_type`.
++// ponytail: one process-wide value (one session at a time); a Session field if that changes.
++pub(crate) static CAMERA_TYPE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
++
+ /// The actual game camera call, after completed physical output conditioning.
+ /// The user's selected normal High camera is graph type1. This custom world
+ /// has no road/ledge/camera-volume annotations or other moving actors.
+@@ -57,7 +62,7 @@ pub(crate) fn advance(
+     )?;
+     let snapshot = crate::camera::publish_camera_subject(physics, skater, &inputs)?;
+     let environment = crate::camera::CameraGraphEnvironment {
+-        camera_type: 1,
++        camera_type: CAMERA_TYPE.load(std::sync::atomic::Ordering::Relaxed),
+         on_road: false,
+         ledge_left: false,
+         ledge_right: false,
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+index c7d008f..6b51ce8 100644
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -11,6 +11,7 @@ pub mod hom;
+ pub mod hud;
+ pub mod lips;
+ pub mod difficulty;
++pub mod camera_type;
+ pub use super::host_bodies::{CHARACTER_GROUP, HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+ 
+ /// Synthetic HOST regression for the shared moving-entity query boundary.
+diff --git a/crates/skate-host/src/physics/bridge/camera_type.rs b/crates/skate-host/src/physics/bridge/camera_type.rs
+new file mode 100644
+index 0000000..200d319
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/camera_type.rs
+@@ -0,0 +1,14 @@
++//! SkateV camera choice (overlay patch 0044): retail's stock camera graph picks
++//! its CameraLow or CameraHigh branch by `IsCameraTypeActive`.
++use super::Session;
++use crate::physics::camera_output::CAMERA_TYPE;
++use std::sync::atomic::Ordering;
++
++impl Session {
++    /// 0 Low, 1 High. False (unchanged) otherwise.
++    pub fn set_camera_type(&mut self, camera_type: u32) -> bool {
++        if camera_type > 1 { return false; }
++        CAMERA_TYPE.store(camera_type, Ordering::Relaxed);
++        true
++    }
++}

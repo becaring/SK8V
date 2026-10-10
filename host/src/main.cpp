@@ -81,6 +81,7 @@ struct Config {
     float skitchStandoff = 0.3f;   // SkitchStandoff: metres behind a car's rear the skitch grab line sits (0 on the bodywork)
     bool lipRule = true;           // LipRule=1: stall on a ramp lip only riding up slowly; 0 retail grind admission
     int difficulty = 0;            // Difficulty=Easy|Normal|Hardcore|Motorized: Skate 3's physics_mode (index)
+    int cameraType = 1;            // Camera=Low|High: Skate 3's stock camera graph branch (0 Low, 1 High)
     int skaterTriangles = 3000;
     bool dynamicWorld = true;
     float dynamicRadius = 35.0f;
@@ -217,6 +218,7 @@ const Key kKeys[] = {
          for (int i = 0; i < 4; ++i)
              if (menu::SameText(v, kDifficulties[i])) c.difficulty = i;
      }},
+    {"Camera", [](Config& c, const std::string& v) { c.cameraType = menu::SameText(v, "Low") ? 0 : 1; }},
     {"SkitchStandoff", Store<&Config::skitchStandoff>},
     {"SkaterTriangles", Store<&Config::skaterTriangles>},
     {"DynamicWorld", Store<&Config::dynamicWorld>},
@@ -1059,6 +1061,24 @@ void SendCharacter(const Session& s, const Config& cfg) {
         c.texture[slot] = static_cast<std::uint8_t>(t < 0 ? 0 : t);
     }
     c.triangle_budget = static_cast<std::uint32_t>(cfg.characterTriangles > 0 ? cfg.characterTriangles : 0);
+    // The ped's own skeleton, for a model a mod replaced after setup read the
+    // archives (a CJ model over Franklin stood still: the pose was solved on
+    // Franklin's skeleton and never matched the live one).
+    static std::string live;
+    live.clear();
+    probe::SkeletonInfo sk;
+    const char* why = nullptr;
+    std::string json;
+    if (probe::ResolvePedSkeleton(s.ped, sk, why) && probe::SkeletonJson(sk, json)) {
+        std::error_code ec;
+        const std::string dir = cfg.pedCache + "/.live";
+        std::filesystem::create_directories(std::filesystem::u8path(dir), ec);
+        if (FILE* f = _wfsopen((std::filesystem::u8path(dir) / L"skeleton.json").c_str(), L"wb", _SH_DENYWR)) {
+            const bool ok = std::fwrite(json.data(), 1, json.size(), f) == json.size();
+            if (std::fclose(f) == 0 && ok) live = dir;
+        }
+    }
+    c.live_skeleton_utf8 = live.empty() ? nullptr : live.c_str();
     g_runtime.SetCharacter(&c);
     Logf("SkateV Legacy: character model %08x outfit sent", c.model_hash);
 }
@@ -2141,6 +2161,8 @@ std::vector<menu::Page> MenuPages(Session& s) {
         Choice("Difficulty", "Difficulty", {"Easy", "Normal", "Hardcore", "Motorized"},
                {"Easy", "Normal", "Hardcore", "Motorized (RB motor, no bad-landing bails)"},
                Bound("Difficulty", [] { g_runtime.SetDifficulty(g_config.difficulty); })),
+        Choice("Camera", "Camera", {"High", "Low"}, {"High (Skate 3 default)", "Low"},
+               Bound("Camera", [] { g_runtime.SetCameraType(g_config.cameraType); })),
         Flag("Ramp lip rule", "LipRule", D.lipRule, Bound("LipRule", [] { g_runtime.SetLipRule(g_config.lipRule); })),
         Number("Air time limit", "AirTimeLimit", D.airTimeLimit, -1, 120, 5, LimitText,
                Bound("AirTimeLimit", [] { g_runtime.SetAirLimit(g_config.airTimeLimit); })),
@@ -2308,6 +2330,8 @@ void ScriptMain() {
              g_runtime.SetLipRule(cfg.lipRule) ? "runtime option present" : "runtime option absent");
         Logf("SkateV Legacy: difficulty %s (%s)", kDifficulties[cfg.difficulty],
              g_runtime.SetDifficulty(cfg.difficulty) ? "runtime option present" : "runtime option absent");
+        Logf("SkateV Legacy: camera %s (%s)", cfg.cameraType == 0 ? "Low" : "High",
+             g_runtime.SetCameraType(cfg.cameraType) ? "runtime option present" : "runtime option absent");
         g_runtime.SetVerboseLog(cfg.verboseLog);
     }
 

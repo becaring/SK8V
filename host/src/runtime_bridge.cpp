@@ -45,6 +45,7 @@ bool RuntimeBridge::Load(const wchar_t* dllPath, const std::string& dataRoot, co
     sym(setAirLimit_, "sv_set_air_limit");
     sym(setLipRule_, "sv_set_lip_rule");
     sym(setDifficulty_, "sv_set_difficulty");
+    sym(setCameraType_, "sv_set_camera_type");
     sym(setVerboseLog_, "sv_set_verbose_log");
     sym(setSkitchStandoff_, "sv_set_skitch_standoff");
     sym(skitchVehicle_, "sv_skitch_vehicle");
@@ -204,6 +205,10 @@ bool RuntimeBridge::SetAirLimit(float seconds) {
 
 bool RuntimeBridge::SetLipRule(bool enabled) {
     return runtime_ && setLipRule_(runtime_, enabled ? 1u : 0u) != 0;
+}
+
+bool RuntimeBridge::SetCameraType(int type) {
+    return runtime_ && setCameraType_ && type >= 0 && setCameraType_(runtime_, static_cast<std::uint32_t>(type)) != 0;
 }
 
 bool RuntimeBridge::SetDifficulty(int index) {

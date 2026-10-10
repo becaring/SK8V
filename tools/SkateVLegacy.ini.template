@@ -34,6 +34,8 @@ AirTimeLimit=30
 ; Difficulty: Skate 3's own modes. Easy (auto-push, assisted flips and spins, wide grind lock), Normal, Hardcore
 ;   (tight grind lock, no assists), Motorized (RB runs a motor; bad landings never bail). Kept across reinstalls.
 Difficulty=Easy
+; Camera: Skate 3's camera, High (default) or Low (closer to the ground). Kept across reinstalls.
+Camera=High
 ; LipRule: 1 = a rolling board stalls on a ramp lip or coping only when riding up into it slowly; dropping in and
 ;   carrying speed over a lip never catch the trucks (ollie onto it to grind). 0 = Skate 3's own. Kept across reinstalls.
 LipRule=1

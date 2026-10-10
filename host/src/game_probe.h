@@ -2,6 +2,7 @@
 #include "ped_collider_builder.h"
 #include <cstdint>
 #include <cstddef>
+#include <string>
 
 // The live GTA entity skeleton and fragment, read through one bounded,
 // fault-tolerant memory reader (ReadLive).
@@ -19,6 +20,9 @@ struct SkeletonInfo {
 // Entity handle -> skeleton. `why` names the failing step when this returns false.
 bool ResolvePedSkeleton(int ped, SkeletonInfo& out, const char*& why);
 int BoneIndexByTag(const SkeletonInfo& s, std::uint16_t tag);
+// The skeleton's bones as the ped cache's skeleton.json (name, tag, parent, bind
+// t/r/s; skatev-ped-export's layout), read from the live crSkeletonData.
+bool SkeletonJson(const SkeletonInfo& s, std::string& json);
 // The ped's live fragment type (fragInst +0x78): its ragdoll compound and
 // skeleton are what any ped model actually collides with. Fails closed.
 bool PedFragmentType(int ped, std::uintptr_t& type, const char*& why);

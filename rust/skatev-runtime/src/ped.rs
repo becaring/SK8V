@@ -451,6 +451,18 @@ pub struct PedModel {
     textures: Vec<(String, String)>,
 }
 
+/// Whether two `skeleton.json` folders hold the same bones (name, tag and
+/// parent, in order): a pose solved on one can be written to the other.
+pub fn same_skeleton(a: &Path, b: &Path) -> bool {
+    let bones = |dir: &Path| -> Option<Vec<(String, u64, i64)>> {
+        let sk: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("skeleton.json")).ok()?).ok()?;
+        Some(sk["bones"].as_array()?.iter()
+            .map(|b| (b["name"].as_str().unwrap_or("").to_string(), b["tag"].as_u64().unwrap_or(0), b["parent"].as_i64().unwrap_or(-1)))
+            .collect())
+    };
+    matches!((bones(a), bones(b)), (Some(x), Some(y)) if x == y)
+}
+
 /// Finds the cached ped whose folder name hashes to `model_hash`.
 pub fn find(cache_root: &Path, model_hash: u32) -> Option<PathBuf> {
     std::fs::read_dir(cache_root)

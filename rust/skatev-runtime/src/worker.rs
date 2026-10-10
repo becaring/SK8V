@@ -12,7 +12,7 @@ use bevy_math::{Mat4, Quat, Vec3};
 use skate_host::bridge::{CollisionBuilder, InputFrame, Pose, PreparedCollision, Session};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 pub const STATUS_LOADING: u32 = 0;
 pub const STATUS_READY: u32 = 1;
@@ -74,6 +74,7 @@ pub enum Job {
     /// The SkateV ramp-lip rule (patch 0033; false: retail admission).
     LipRule(bool),
     Difficulty(u32),
+    CameraType(u32),
     /// Metres behind a car's rear the skitch grab line sits.
     SkitchStandoff(f32),
     /// Play a showcase line (`line.rs`) from its start while skating.
@@ -86,6 +87,7 @@ pub struct CharacterRequest {
     pub model_hash: u32,
     pub variation: ped::Variation,
     pub budget: usize,
+    pub live_skeleton: Option<PathBuf>,
 }
 
 /// Latest publication, already in GTA space.
@@ -144,9 +146,36 @@ fn mix_mat(a: Mat4, b: Mat4, t: f32) -> Mat4 {
     Mat4::from_scale_rotation_translation(sa.lerp(sb, t), ra.slerp(rb, t), ta.lerp(tb, t))
 }
 
+/// The published state right after one pass of the worker.
+#[derive(Clone)]
+pub struct Held {
+    pub step: u64,
+    pub snapshot: Snapshot,
+    pub previous: Option<Snapshot>,
+    pub blend: f32,
+}
+
 impl Shared {
     pub fn shown(&self) -> Shown {
-        let s = &self.snapshot;
+        shown(&self.snapshot, self.previous.as_ref(), self.blend)
+    }
+
+    /// The snapshot and what to show as they stood after host step `step`
+    /// (the newest kept pass at or before it), or the latest when none is.
+    /// sv_get_output asks for the step before the frame's own: that one had a
+    /// whole frame to finish, so GTA's main thread never waits for Skate's
+    /// tick (it waited up to 5 ms a frame: 30 fps lost on slower CPUs), and
+    /// every frame is exactly one step behind (no uneven motion).
+    pub fn at_step(&self, step: u64) -> (&Snapshot, Shown) {
+        match self.held.iter().rev().find(|h| h.step <= step) {
+            Some(h) => (&h.snapshot, shown(&h.snapshot, h.previous.as_ref(), h.blend)),
+            None => (&self.snapshot, self.shown()),
+        }
+    }
+}
+
+fn shown(s: &Snapshot, previous: Option<&Snapshot>, blend: f32) -> Shown {
+    {
         let latest = Shown {
             root: s.root,
             root_rotation: s.root_rotation,
@@ -158,13 +187,13 @@ impl Shared {
             board_pose: s.board_pose,
             board_entity: s.board_entity,
         };
-        let Some(p) = self.previous.as_ref().filter(|p| {
+        let Some(p) = previous.filter(|p| {
             s.tick > p.tick && s.tick - p.tick <= 3 && p.root.distance_squared(s.root) < 4.0
         }) else {
             return latest;
         };
         // blend 1 is the latest tick; 0 the one before.
-        let t = self.blend.clamp(0.0, 1.0);
+        let t = blend.clamp(0.0, 1.0);
         let back = |a: Vec3, b: Vec3| a.lerp(b, t);
         Shown {
             root: back(p.root, s.root),
@@ -348,13 +377,27 @@ impl Presenter {
         // keeps GTA's own animation (the host only writes a pose published
         // for this skeleton). Otherwise the runtime draws Skate's skater.
         let fallback = if self.board_only { "the ped keeps GTA's animation" } else { "showing Skate's skater" };
-        let Some(dir) = ped::find(&r.cache_root, r.model_hash) else {
-            log(&format!(
-                "character model {:#010x} not in ped cache {}; {fallback}",
-                r.model_hash,
-                r.cache_root.display()
-            ));
-            return;
+        // The cache holds the models setup read from GTA's archives; a mod
+        // that replaces the model (or an add-on ped) brings its own skeleton,
+        // and a pose solved on the cached one is never written to it.
+        let dir = match (ped::find(&r.cache_root, r.model_hash), r.live_skeleton.clone()) {
+            (Some(dir), Some(live)) if !ped::same_skeleton(&dir, &live) => {
+                log(&format!("character model {:#010x}: the live skeleton differs from the ped cache's (a replaced model?); posing the live one", r.model_hash));
+                live
+            }
+            (Some(dir), _) => dir,
+            (None, Some(live)) => {
+                log(&format!("character model {:#010x} not in ped cache {}; posing its live skeleton", r.model_hash, r.cache_root.display()));
+                live
+            }
+            (None, None) => {
+                log(&format!(
+                    "character model {:#010x} not in ped cache {}; {fallback}",
+                    r.model_hash,
+                    r.cache_root.display()
+                ));
+                return;
+            }
         };
         match ped::PedModel::load(&dir, &r.variation, r.budget) {
             Ok(model) if model.triangle_count() == 0 && !self.board_only => log(&format!(
@@ -390,8 +433,11 @@ pub struct Shared {
     /// towards `snapshot` (the fixed step's leftover, 0..1). See `Shown`.
     pub previous: Option<Snapshot>,
     pub blend: f32,
-    /// `Job::Step`s the worker has finished (sv_get_output waits for its frame's).
+    /// `Job::Step`s the worker has finished.
     pub steps_done: u64,
+    /// The published state as each of the last two passes left it, by
+    /// `steps_done`: sv_get_output shows the previous frame's step (see `at_step`).
+    pub held: std::collections::VecDeque<Held>,
     pub lifecycle: LifecycleShared,
     /// Original HUD publication (hud.rs).
     pub hud: crate::hud::HudShared,
@@ -458,7 +504,7 @@ pub fn spawn(
     hall_of_meat: (bool, bool),
     natural_stance: u32,
     log: Log,
-) -> (mpsc::Sender<Job>, Arc<Mutex<Shared>>, Arc<Condvar>) {
+) -> (mpsc::Sender<Job>, Arc<Mutex<Shared>>) {
     let shared = Arc::new(Mutex::new(Shared {
         status: STATUS_LOADING,
         message: "loading Skate data".into(),
@@ -466,6 +512,7 @@ pub fn spawn(
         previous: None,
         blend: 1.0,
         steps_done: 0,
+        held: Default::default(),
         lifecycle: LifecycleShared::default(),
         hud: Default::default(),
         records: Default::default(),
@@ -474,8 +521,6 @@ pub fn spawn(
     }));
     let (send, receive) = mpsc::channel();
     let thread_shared = Arc::clone(&shared);
-    let stepped = Arc::new(Condvar::new());
-    let thread_stepped = Arc::clone(&stepped);
     let fail_shared = Arc::clone(&shared);
     let fail_log = Arc::clone(&log);
     let started = std::thread::Builder::new()
@@ -493,7 +538,6 @@ pub fn spawn(
                     natural_stance,
                     receive,
                     &thread_shared,
-                    &thread_stepped,
                     &log,
                 )
             }));
@@ -520,7 +564,7 @@ pub fn spawn(
         s.status = STATUS_ERROR;
         s.message = format!("cannot start Skate worker: {e}");
     }
-    (send, shared, stepped)
+    (send, shared)
 }
 
 fn set(shared: &Mutex<Shared>, status: u32, message: impl Into<String>) {
@@ -540,7 +584,6 @@ fn run(
     natural_stance: u32,
     jobs: mpsc::Receiver<Job>,
     shared: &Mutex<Shared>,
-    stepped: &Condvar,
     log: &Log,
 ) -> Result<(), String> {
     let started = std::time::Instant::now();
@@ -642,6 +685,7 @@ fn run(
     let mut air_limit: Option<f32> = None;
     let mut lip_rule = true;
     let mut difficulty = 0u32;
+    let mut camera_type = 1u32;
     let mut last_speed = 0.0f32;
     let mut last_root = bevy_math::Vec3::ZERO;
     let mut perf = Perf::new();
@@ -668,13 +712,17 @@ fn run(
 
     loop {
         crate::crash::WORKER.leave();
-        // Every job taken so far is done (each pass ends here): the host's frame
-        // waiting on its step goes on.
+        // Every job taken so far is done (each pass ends here): what the host
+        // shows next frame (Shared::at_step).
         {
             let mut s = shared.lock().unwrap();
             if s.steps_done != steps_done {
                 s.steps_done = steps_done;
-                stepped.notify_all();
+                let held = Held { step: steps_done, snapshot: s.snapshot.clone(), previous: s.previous.clone(), blend: s.blend };
+                s.held.push_back(held);
+                if s.held.len() > 2 {
+                    s.held.pop_front();
+                }
             }
         }
         // Coalesce queued frames: every pad packet is collected, time summed.
@@ -707,7 +755,7 @@ fn run(
             };
             match result {
                 Ok(mut s) => {
-                    apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty);
+                    apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty, camera_type);
                     session = Some(s);
                     life(shared, |l| {
                         l.session_builds += 1;
@@ -756,7 +804,7 @@ fn run(
                             shared,
                             log,
                         )?;
-                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty);
+                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty, camera_type);
                         builder_jobs = Some(sender);
                         session = Some(s);
                         audio_state = crate::audio::map::State::default();
@@ -919,6 +967,13 @@ fn run(
                     difficulty = index;
                     if let Some(s) = session.as_mut() {
                         s.set_difficulty(index);
+                    }
+                }
+                Job::CameraType(t) => {
+                    log(&format!("camera: {}", if t == 0 { "low" } else { "high" }));
+                    camera_type = t;
+                    if let Some(s) = session.as_mut() {
+                        s.set_camera_type(t);
                     }
                 }
                 Job::PhysicsLevel(level) => pending_live = Some(level),
@@ -1105,7 +1160,7 @@ fn run(
                     log,
                 ) {
                     Ok((mut s, sender)) => {
-                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty);
+                        apply_settings(&mut s, hom.enabled(), bail_limit, air_limit, lip_rule, difficulty, camera_type);
                         builder_jobs = Some(sender);
                         session = Some(s);
                         audio_state = crate::audio::map::State::default();
@@ -1633,9 +1688,11 @@ fn life(shared: &Mutex<Shared>, f: impl FnOnce(&mut LifecycleShared)) {
 
 /// The host settings a new session starts with; later changes are applied
 /// by their jobs (plain session fields, kept across activations).
-fn apply_settings(s: &mut Session, hall_of_meat: bool, bail: Option<f32>, air: Option<f32>, lip: bool, difficulty: u32) {
+fn apply_settings(s: &mut Session, hall_of_meat: bool, bail: Option<f32>, air: Option<f32>, lip: bool, difficulty: u32,
+                  camera_type: u32) {
     s.set_hall_of_meat(hall_of_meat);
     s.set_difficulty(difficulty);
+    s.set_camera_type(camera_type);
     s.set_bail_maximum_time(bail);
     s.set_air_time_limit(air);
     s.set_lip_rule(lip);
@@ -2171,6 +2228,7 @@ mod shown_tests {
             previous: Some(prev),
             blend,
             steps_done: 0,
+            held: Default::default(),
             lifecycle: Default::default(),
             hud: Default::default(),
             records: Default::default(),
@@ -2195,5 +2253,15 @@ mod shown_tests {
         assert_eq!(shared(at(1, 0.0, 0.0), at(2, 1.0, 0.0), 1.0).shown().root.x, 1.0);
         assert_eq!(shared(at(1, 0.0, 0.0), at(2, 5.0, 0.0), 0.25).shown().root.x, 5.0, "a teleport is not blended");
         assert_eq!(shared(at(7, 0.0, 0.0), at(2, 1.0, 0.0), 0.25).shown().root.x, 1.0, "a reset tick is not blended");
+    }
+
+    #[test]
+    fn a_frame_shows_the_step_before_its_own() {
+        let at = |tick, x: f32| Snapshot { tick, root: Vec3::new(x, 0.0, 0.0), ..Default::default() };
+        let mut s = shared(at(4, 4.0), at(5, 5.0), 1.0);
+        s.held.extend([3u64, 4].map(|step| Held { step, snapshot: at(step, step as f32), previous: None, blend: 1.0 }));
+        assert_eq!(s.at_step(3).0.tick, 3, "its own step done too: still the one before");
+        assert_eq!(s.at_step(9).0.tick, 4, "worker behind: the newest it has");
+        assert_eq!(s.at_step(1).0.tick, 5, "nothing kept that early: the latest");
     }
 }

@@ -70,6 +70,9 @@ struct SvCharacter {
     std::uint16_t drawable[12];
     std::uint8_t texture[12];
     std::uint32_t triangle_budget;
+    // Folder holding the live ped's skeleton.json (game_probe SkeletonJson), or null: posed
+    // instead of the cached model's skeleton when the two differ (a replaced or add-on model).
+    const char* live_skeleton_utf8;
 };
 
 // RetailQuirk::BackwardsMan settings (Skate 3 backwards-man / speed glitch).
@@ -190,13 +193,14 @@ static_assert(offsetof(SvColorTri, rgba) == 36);
 static_assert(sizeof(SvBox) == 44);
 static_assert(offsetof(SvBox, rotation) == 16);
 static_assert(sizeof(SvDynamicHit) == 28);
-static_assert(sizeof(SvCharacter) == 56);
+static_assert(sizeof(SvCharacter) == 64);
 static_assert(sizeof(SvQuirkConfig) == 32);
 static_assert(sizeof(SvQuirkState) == 72);
 static_assert(offsetof(SvQuirkState, launch_tick) == 56);
 static_assert(offsetof(SvCharacter, drawable) == 16);
 static_assert(offsetof(SvCharacter, texture) == 40);
 static_assert(offsetof(SvCharacter, triangle_budget) == 52);
+static_assert(offsetof(SvCharacter, live_skeleton_utf8) == 56);
 static_assert(offsetof(SvCreateInfo, data_root_utf8) == 40);
 static_assert(sizeof(SvPad) == 20);
 static_assert(offsetof(SvPad, buttons) == 8);
@@ -320,6 +324,8 @@ using SvSetAirLimitFn = std::uint32_t(__cdecl*)(void*, float);
 // admission. Returns 1 when queued. Export: sv_set_lip_rule.
 using SvSetLipRuleFn = std::uint32_t(__cdecl*)(void*, std::uint32_t);
 
+// sv_set_camera_type(rt, type): Skate 3's camera, 0 Low, 1 High (default). Export: sv_set_camera_type.
+using SvSetCameraTypeFn = std::uint32_t(__cdecl*)(void*, std::uint32_t);
 // sv_set_difficulty(rt, index): Skate 3's physics_mode, 0 easy, 1 normal,
 // 2 hardcore, 3 motorized; live and for later sessions. Returns 1 when queued.
 // Export: sv_set_difficulty.

@@ -51,6 +51,7 @@ public:
     bool SetAirLimit(float seconds);
     bool SetLipRule(bool enabled);
     bool SetDifficulty(int index);
+    bool SetCameraType(int type);  // 0 Low, 1 High
     bool SetVerboseLog(bool enabled);
     bool SetSkitchStandoff(float metres);
     int SkitchVehicle() const;
@@ -90,6 +91,7 @@ private:
     SvSetAirLimitFn setAirLimit_ = nullptr;
     SvSetLipRuleFn setLipRule_ = nullptr;
     SvSetDifficultyFn setDifficulty_ = nullptr;
+    SvSetCameraTypeFn setCameraType_ = nullptr;
     SvSetVerboseLogFn setVerboseLog_ = nullptr;
     SvSetSkitchStandoffFn setSkitchStandoff_ = nullptr;
     SvSkitchVehicleFn skitchVehicle_ = nullptr;

@@ -36,7 +36,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 use bevy_math::Vec3;
 use worker::{Job, Pad, Shared};
@@ -132,6 +132,10 @@ pub struct SvCharacter {
     pub drawable: [u16; 12],
     pub texture: [u8; 12],
     pub triangle_budget: u32,
+    /// Folder holding the live ped's `skeleton.json` (read by the host from
+    /// GTA's memory), or null. Posed instead of the cached model's skeleton
+    /// when the two differ: a model replaced by a mod, or an add-on ped.
+    pub live_skeleton_utf8: *const c_char,
 }
 
 /// RetailQuirk::BackwardsMan settings.
@@ -298,7 +302,6 @@ struct Runtime {
     jobs: mpsc::Sender<Job>,
     shared: Arc<Mutex<Shared>>,
     /// Signalled with `Shared::steps_done`; `steps_sent` counts sv_step's jobs.
-    stepped: Arc<Condvar>,
     steps_sent: AtomicU64,
     log: worker::Log,
     /// The presentation of the snapshot `sv_get_output` last returned. The
@@ -440,12 +443,11 @@ pub unsafe extern "C" fn sv_create(info: *const SvCreateInfo) -> *mut c_void {
         // Skate profile stance: 0 regular (default), 1 goofy (flag 8).
         let natural_stance = u32::from(info.presentation_flags & 8 != 0);
         log(&format!("profile stance: {}", if natural_stance == 0 { "regular" } else { "goofy" }));
-        let (jobs, shared, stepped) =
+        let (jobs, shared) =
             worker::spawn(root, cache, budget, board_only, hall_of_meat, natural_stance, Arc::clone(&log));
         Box::into_raw(Box::new(Runtime {
             jobs,
             shared,
-            stepped,
             steps_sent: AtomicU64::new(0),
             log,
             frame: Mutex::new(None),
@@ -521,22 +523,14 @@ pub unsafe extern "C" fn sv_get_output(rt: *const c_void, out: *mut SvOutput) ->
         let (Some(rt), Some(out)) = (unsafe { runtime(rt) }, unsafe { out.as_mut() }) else {
             return 0;
         };
-        // The frame shows its own step: the worker ticks it in about a
-        // millisecond. Read without waiting, a frame showed by turns its own
-        // step or the one before, and the skater, ped and camera moved in
-        // uneven steps (the Rockstar Editor records them so). A worker already
-        // behind (loading, activating) is not waited for.
+        // The frame shows the step before its own (Shared::at_step), never
+        // waiting: a frame that showed by turns its own step or the one
+        // before moved the skater, ped and camera in uneven steps (the
+        // Rockstar Editor records them so), and waiting for its own held
+        // GTA's main thread for Skate's whole tick.
         let sent = rt.steps_sent.load(Ordering::Acquire);
-        let mut shared = rt.shared.lock().unwrap();
-        if shared.steps_done + 1 == sent {
-            shared = rt
-                .stepped
-                .wait_timeout_while(shared, std::time::Duration::from_millis(5), |s| s.steps_done < sent)
-                .unwrap()
-                .0;
-        }
-        let s = &shared.snapshot;
-        let shown = shared.shown(); // between the last two ticks (worker::Shown)
+        let shared = rt.shared.lock().unwrap();
+        let (s, shown) = shared.at_step(sent.saturating_sub(1)); // shown: between two ticks (worker::Shown)
         *rt.frame.lock().unwrap() = Some(Frame {
             character_pose: Arc::clone(&shown.character_pose),
             board_pose: shown.board_pose,
@@ -629,6 +623,7 @@ pub unsafe extern "C" fn sv_set_character(rt: *mut c_void, character: *const SvC
                         texture: c.texture,
                     },
                     budget: c.triangle_budget as usize,
+                    live_skeleton: unsafe { path_arg(c.live_skeleton_utf8) },
                 })
             }
             _ => None,
@@ -1016,6 +1011,16 @@ pub unsafe extern "C" fn sv_set_air_limit(rt: *mut c_void, seconds: f32) -> u32 
     guard(0, || {
         let Some(rt) = (unsafe { runtime(rt) }) else { return 0 };
         rt.jobs.send(Job::AirLimit(time_limit(seconds))).is_ok() as u32
+    })
+}
+
+/// Skate 3's camera (overlay patch 0044): 0 Low, 1 High (retail's default);
+/// applied live and to every later session. Returns 1 when queued.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_set_camera_type(rt: *mut c_void, camera_type: u32) -> u32 {
+    guard(0, || {
+        let Some(rt) = (unsafe { runtime(rt) }) else { return 0 };
+        (camera_type < 2 && rt.jobs.send(Job::CameraType(camera_type)).is_ok()) as u32
     })
 }
 
@@ -1680,13 +1685,14 @@ mod tests {
         assert_eq!(size_of::<SvBox>(), 44);
         assert_eq!(offset_of!(SvBox, rotation), 16);
         assert_eq!(size_of::<SvDynamicHit>(), 28);
-        assert_eq!(size_of::<SvCharacter>(), 56);
+        assert_eq!(size_of::<SvCharacter>(), 64);
         assert_eq!(size_of::<SvQuirkConfig>(), 32);
         assert_eq!(size_of::<SvQuirkState>(), 72);
         assert_eq!(offset_of!(SvQuirkState, launch_tick), 56);
         assert_eq!(offset_of!(SvCharacter, drawable), 16);
         assert_eq!(offset_of!(SvCharacter, texture), 40);
         assert_eq!(offset_of!(SvCharacter, triangle_budget), 52);
+        assert_eq!(offset_of!(SvCharacter, live_skeleton_utf8), 56);
         assert_eq!(offset_of!(SvCreateInfo, data_root_utf8), 40);
         assert_eq!(size_of::<SvPad>(), 20);
         assert_eq!(offset_of!(SvPad, buttons), 8);

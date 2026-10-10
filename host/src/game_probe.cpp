@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <main.h>
 #include <cstdint>
+#include <charconv>
 #include <cstring>
 
 namespace probe {
@@ -89,6 +90,48 @@ bool ResolvePedSkeleton(int ped, SkeletonInfo& out, const char*& why) {
     Read(out.skeleton + 0x20, out.count);
     if (data) Read(data + 0x20, out.bones); // crBoneData[0], 80 bytes each
     return data && out.objectMtx && out.bones && out.count > 0;
+}
+
+bool SkeletonJson(const SkeletonInfo& s, std::string& json) {
+    const auto num = [&json](float v) {
+        char b[32];
+        const auto r = std::to_chars(b, b + sizeof(b), v); // locale-independent, round-trip
+        json.append(b, r.ptr);
+    };
+    const auto vec = [&](const float* v, int n) {
+        json += '[';
+        for (int i = 0; i < n; ++i) { if (i) json += ','; num(v[i]); }
+        json += ']';
+    };
+    json = "{\"source\":\"live\",\"bones\":[";
+    for (int i = 0; i < s.count; ++i) {
+        unsigned char bone[80];
+        if (!ReadLive(s.bones + 80 * i, bone, sizeof(bone))) return false;
+        float r[4], t[3], sc[3];
+        std::int16_t parent;
+        std::uint16_t tag;
+        std::uintptr_t namePtr;
+        std::memcpy(r, bone + 0x00, 16);
+        std::memcpy(t, bone + 0x10, 12);
+        std::memcpy(sc, bone + 0x20, 12);
+        std::memcpy(&parent, bone + 0x32, 2);
+        std::memcpy(&namePtr, bone + 0x38, 8);
+        std::memcpy(&tag, bone + 0x44, 2);
+        char name[64] = {};
+        if (namePtr) ReadLive(namePtr, name, sizeof(name) - 1);
+        std::string clean;
+        for (const char* c = name; *c; ++c) if (*c >= 0x20 && *c < 0x7f && *c != '"' && *c != '\\') clean += *c;
+        if (i) json += ',';
+        json += "{\"name\":\"" + clean + "\",\"tag\":" + std::to_string(tag) + ",\"parent\":" + std::to_string(parent) + ",\"t\":";
+        vec(t, 3);
+        json += ",\"r\":";
+        vec(r, 4);
+        json += ",\"s\":";
+        vec(sc, 3);
+        json += '}';
+    }
+    json += "]}";
+    return s.count > 0;
 }
 
 int BoneIndexByTag(const SkeletonInfo& s, std::uint16_t tag) {
