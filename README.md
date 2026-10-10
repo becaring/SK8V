@@ -58,7 +58,7 @@ python tools/prepare.py --skate "<Skate 3.iso or folder>" --gta "<GTA V folder>"
 | Keyboard `/` or controller `Back + LB` | Open SK8V menu |
 | `Back` / hold `Back` | Equip or holster a weapon / open weapon wheel when armed |
 | `LB` / `RB` when armed | Aim / fire |
-| D-pad left/right, gun holstered | Change radio station |
+| Hold LB, D-pad left/right, gun holstered | Change radio station |
 | D-pad left/right, gun equipped | Change weapon |
 | Double-tap `X` on foot near a grabbable wall | GTA mantle, then return to Skate |
 
