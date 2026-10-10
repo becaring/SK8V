@@ -125,7 +125,14 @@ class Prepare:
 
     def stage_hom_hud(self):
         py('prepare-hom-hud.py', '--game', self.disc, '--assets', self.assets)
-        py('prepare-hom-hud.py', '--game', self.disc, '--assets', self.assets, '--movie', 'chyron', '--gta', self.gta)
+        hud = self.work / 'hud'
+        try:
+            gta_extract.extract(binary(RPF), self.keys, self.gta / 'update/update.rpf', ['*scaleform_generic.rpf/hud.ytd'], hud)
+            ytd = ['--hud-ytd', next(hud.rglob('hud.ytd'))]
+        except (gta_extract.ExtractError, StopIteration) as e:  # the banner keeps the EA logos
+            print(f'station logos skipped: {e}')
+            ytd = []
+        py('prepare-hom-hud.py', '--game', self.disc, '--assets', self.assets, '--movie', 'chyron', *ytd)
 
     def stage_ped_colliders(self):
         src = self.work / 'ped-colliders'

@@ -3,13 +3,14 @@ user's own game files into the converted data root.
 
     python tools/prepare-hom-hud.py --game Skate_3 --assets local/skate-data/assets
     python tools/prepare-hom-hud.py --game Skate_3 --assets local/skate-data/assets \
-        --movie chyron --gta "<GTA V folder>"
+        --movie chyron --hud-ytd <hud.ytd>
 
 `--movie chyron` prepares Skate's TRAX now-playing banner (GTA's radio on
-the board) into `private/hud-chyron`; with `--gta` it also exports GTA's own
-radio station logos (HUD atlas `scaleform_generic.rpf/hud.ytd`, read with
-build/tools/rage.exe) into `private/hud-chyron/logos`, which replace the EA
-logo per station.
+the board) into `private/hud-chyron`; with `--hud-ytd` (GTA's HUD atlas
+`update.rpf/.../scaleform_generic.rpf/hud.ytd`, extracted by tools/prepare.py)
+it also exports GTA's radio station logos into `private/hud-chyron/logos`,
+which replace the EA logo per station. Logos that cannot be read leave the
+EA logos in place.
 
 Writes `<assets>/private/hud-hom/runtime/homscoring.json` plus the RGBA
 textures it references, in the same `skate3-scoring-hud` v1 form as the trick
@@ -141,18 +142,13 @@ STATION_LOGOS = {
 }
 
 
-def station_logos(gta: Path, work: Path, destination: Path) -> int:
+def station_logos(ytd: Path, work: Path, destination: Path) -> int:
     import subprocess
     from PIL import Image
     rage = ROOT / 'build' / 'tools' / 'rage.exe'
     if not rage.exists():
         raise ValueError(f'{rage} missing: run tools/build-rage-cli.ps1')
-    common = ['--no-update-check']
-    keys = ['--exe', str(gta)]
-    subprocess.run([str(rage), *common, 'extract', str(gta / 'update' / 'update.rpf'),
-                    '*scaleform_generic.rpf/hud.ytd', '-r', *keys, '-o', str(work / 'gta')], check=True)
-    ytd = next((work / 'gta').rglob('hud.ytd'))
-    subprocess.run([str(rage), *common, 'textures', str(ytd), '-o', str(work / 'gta-hud')], check=True)
+    subprocess.run([str(rage), '--no-update-check', 'textures', str(ytd), '-o', str(work / 'gta-hud')], check=True)
     out = destination / 'logos'
     out.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -213,7 +209,7 @@ def main():
     parser.add_argument('--game', type=Path, required=True, help='extracted Skate 3 folder (contains data/)')
     parser.add_argument('--assets', type=Path, required=True, help='converted data root (<out>/assets)')
     parser.add_argument('--movie', choices=sorted(MOVIES), default='homscoring')
-    parser.add_argument('--gta', type=Path, help='GTA V folder: export its radio logos (--movie chyron)')
+    parser.add_argument('--hud-ytd', type=Path, help="GTA's hud.ytd: export its radio logos (--movie chyron)")
     args = parser.parse_args()
     bundle, manifest, folder = MOVIES[args.movie]
     assets = args.assets.resolve()
@@ -225,8 +221,11 @@ def main():
         work = Path(temporary)
         prepare(args.game.resolve(), work, collections, bundle, manifest)
         count = install(work, assets / 'private' / folder, manifest)
-        if args.movie == 'chyron' and args.gta:
-            print(f'{station_logos(args.gta.resolve(), work, assets / "private" / folder)} station logos')
+        if args.movie == 'chyron' and args.hud_ytd:
+            try:
+                print(f'{station_logos(args.hud_ytd.resolve(), work, assets / "private" / folder)} station logos')
+            except Exception as e:  # the banner still works with the EA logos
+                print(f'station logos skipped: {e}')
     print(f'{args.movie} HUD ready: {count} files in {assets / "private" / folder}')
 
 
