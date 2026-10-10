@@ -32,21 +32,6 @@ python tools/prepare.py --skate "<Skate 3.iso or folder>" --gta "<GTA V folder>"
 
 (from the extracted release folder; omit --stance for Regular).
 
-### Unable to save settings in the menu?
-
-1. Right-click your game install folder and select Properties.
-2. Click the Security tab and click Edit.
-3. Click Add, type your specific user account name (or less preferably, Everyone), then click Check Names and OK.
-4. Select the newly added user or group, check the box for Full control under the Allow column, then click Apply and OK
-
-### Known Limitations & Future Support
-
-- **Rockstar Editor:** Recording and playback are not currently functional with SK8V. Support is planned for a future update.
-
-- **Teleporting while skating:** Teleporting directly while Skate mode is active may cause the skater to fall through the map. Switch back to GTA control before teleporting, then resume skating at your destination.
-
-- **GTA V Enhanced:** SK8V currently supports GTA V Legacy only. Enhanced Edition compatibility is a long-term goal, but may require significant additional work and is not guaranteed.
-
 ## Controls
 
 **All regular skating controls are Skate 3's.** SK8V adds:
@@ -65,6 +50,26 @@ python tools/prepare.py --skate "<Skate 3.iso or folder>" --gta "<GTA V folder>"
 
 Swimming switches to GTA automatically and returns to Skate afterward. **Hall of Meat is on by default** and can be disabled in the SK8V menu, alongside other gameplay settings.
 
+### Unable to save settings in the menu?
+
+1. Right-click your game install folder and select Properties.
+2. Click the Security tab and click Edit.
+3. Click Add, type your specific user account name (or less preferably, Everyone), then click Check Names and OK.
+4. Select the newly added user or group, check the box for Full control under the Allow column, then click Apply and OK
+
+### Known Limitations & Future Support
+
+- **Rockstar Editor:** Recording and playback are not currently functional with SK8V. Support is planned for a future update.
+
+- **Teleporting while skating:** Teleporting directly while Skate mode is active may cause the skater to fall through the map. Switch back to GTA control before teleporting, then resume skating at your destination.
+
+- **GTA V Enhanced:** SK8V currently supports GTA V Legacy only. Enhanced Edition compatibility is a long-term goal, but may require significant additional work and is not guaranteed.
+
+## Support Me
+[<img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="40">](https://buymeacoffee.com/becaring) [<img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3" height="36">](https://ko-fi.com/becaring)
+
+If you had fun with SK8V, a donation is NEVER required but always appreciated <3 
+
 ## Uninstall
 
 With GTA V closed, remove these from its folder:
@@ -82,8 +87,3 @@ Run BOOTSTRAP.bat to build the code, then follow BUILDING.md to package a releas
 ## License
 
 Original SK8V code is [Apache-2.0](LICENSE); third-party components keep their own licenses and are credited in [NOTICE](NOTICE). SK8V is an unofficial fan project, unaffiliated with EA, Rockstar Games, or Take-Two Interactive. No GTA V or Skate 3 retail assets, executables, keys, or proprietary SDK redistributables are included; supply your own game copies.
-
-## Support Me
-[<img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="40">](https://buymeacoffee.com/becaring) [<img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3" height="36">](https://ko-fi.com/becaring)
-
-If you had fun with SK8V, a donation is NEVER required but always appreciated <3 
