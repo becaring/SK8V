@@ -288,6 +288,7 @@ bool Show(Set& set, const SvBoardPose& pose) {
     if (!interior) {
         interior = Call<int>(GET_INTERIOR_AT_COORDS, pose.entity[12], pose.entity[13], pose.entity[14]);
         room = interior ? Call<std::uint32_t>(GET_ROOM_KEY_FOR_GAME_VIEWPORT) : 0;
+        if (room == 0xFFFFFFFFu) room = 0;  // the camera in no room yet
     }
     if (interior != set.interior || room != set.room) {
         for (Shown& s : set.shown) {
