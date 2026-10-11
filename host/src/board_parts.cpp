@@ -279,13 +279,25 @@ bool Show(Set& set, const SvBoardPose& pose) {
     }
     // Inside an interior GTA draws only what is in its rooms: the parts go
     // into the player's room (a store), and out again outside.
+    // While skating SK8V moves the held (frozen) player by script and GTA may
+    // not update their interior: in a tunnel the board was lit as outside.
+    // Then the interior at the board itself, and the room the camera is in.
     const int ped = Call<int>(PLAYER_PED_ID);
-    const int interior = Call<int>(GET_INTERIOR_FROM_ENTITY, ped);
-    const std::uint32_t room = interior ? Call<std::uint32_t>(GET_ROOM_KEY_FROM_ENTITY, ped) : 0;
+    int interior = Call<int>(GET_INTERIOR_FROM_ENTITY, ped);
+    std::uint32_t room = interior ? Call<std::uint32_t>(GET_ROOM_KEY_FROM_ENTITY, ped) : 0;
+    if (!interior) {
+        interior = Call<int>(GET_INTERIOR_AT_COORDS, pose.entity[12], pose.entity[13], pose.entity[14]);
+        room = interior ? Call<std::uint32_t>(GET_ROOM_KEY_FOR_GAME_VIEWPORT) : 0;
+    }
     if (interior != set.interior || room != set.room) {
         for (Shown& s : set.shown) {
             if (interior && room) Call<void>(FORCE_ROOM_FOR_ENTITY, s.object, interior, room);
             else Call<void>(CLEAR_ROOM_FOR_ENTITY, s.object);
+        }
+        if (&set == &g_ride) {
+            static int s_logs = 0;
+            if (s_logs++ < 40)
+                Logf("board parts: riding in interior %s, room %s", std::to_string(interior).c_str(), std::to_string(room).c_str());
         }
         set.interior = interior, set.room = room;
     }
