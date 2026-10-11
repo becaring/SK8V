@@ -65,6 +65,7 @@ struct Config {
     bool verboseLog = false;  // VerboseLog=1: periodic runtime log lines (perf, skater trace, collision streaming)
     bool loadRuntime = true;  // Runtime=0: ASI + frame-timing log only (A/B testing)
     bool posePed = true;      // PosePed: Skate's pose on the real ped (ped vtable slot 65 wrapper)
+    bool carryBoard = true;   // CarryBoard (SkateMods): the board picked in the wheel stays in hand; E/F get on
     bool liveClip = false;    // LiveClip=1: live_clip.h (Skate's pose also through GTA's anim, the owned clip)
     bool stallSampler = false; // StallSampler=1: stall_sampler.h (stack samples of stalled script frames)
     // Shooting on the board, GTA drive-by layout: GunButton (XInput mask,
@@ -232,6 +233,7 @@ const Key kKeys[] = {
     {"VerboseLog", Store<&Config::verboseLog>},
     {"Runtime", Store<&Config::loadRuntime>},
     {"PosePed", Store<&Config::posePed>},
+    {"CarryBoard", Store<&Config::carryBoard>},
     {"GtaDelegation", Store<&Config::delegation>},
     {"SwimDepth", Store<&Config::swimDepth>},
     {"LiveClip", Store<&Config::liveClip>},
@@ -2366,7 +2368,9 @@ void LifecycleFrame(Session& s, const Config& cfg, bool f6) {
             Call<void>(gta::DISABLE_CONTROL_ACTION, 0, 23, 1); // INPUT_ENTER
             if (pad.buttons & 0x8000) s.suppressEnterUntil = now + 100;
         }
-        const bool wheel = BoardWeaponTick(s, player);
+        // SkateMods: CarryBoard=1, the board picked in the wheel stays in hand in
+        // GTA (melee, the board shop's board on it); E or F gets on.
+        const bool wheel = BoardWeaponTick(s, player) && !cfg.carryBoard;
         if (wheel) Log("SkateV Legacy: board picked in the weapon wheel");
         // SkateMods: Y (E on the keyboard) with the board already in hand gets
         // on too, so a refused or cancelled take-out can be tried again
