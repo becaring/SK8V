@@ -2359,9 +2359,9 @@ void LifecycleFrame(Session& s, const Config& cfg, bool f6) {
         // on too, so a refused or cancelled take-out can be tried again
         // without picking the board in the wheel once more.
         static bool s_yWas = false;
-        const bool y = (pad.buttons & 0x8000) != 0;
-        const bool yBoard = y && !s_yWas && s.boardWeaponWas && now >= s.suppressEnterUntil;
-        s_yWas = y;
+        const bool yHeld = (pad.buttons & 0x8000) != 0;
+        const bool yBoard = yHeld && !s_yWas && s.boardWeaponWas && now >= s.suppressEnterUntil;
+        s_yWas = yHeld;
         if (yBoard) Log("SkateV Legacy: Y with the board in hand");
         if (f6 || wheel || yBoard) TryEnter(s, cfg, !f6);
         // Refused (vehicle, water, ...): no invisible weapon left in hand.
