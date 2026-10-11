@@ -805,6 +805,19 @@ bool PoseFacing(const float* pose, const int feet[4], float& out) {
     return true;
 }
 
+// SkateMods: a pose whose pelvis is more than 4 m from the skater is the last
+// session's (the runtime's first frames after getting on): 0 bones, so GTA's
+// pose stays instead of the body flashing back to where it stood before.
+std::uint32_t FreshPose(std::uint32_t n, const float* pose, int pelvis, const SvOutput& o) {
+    if (n == 0 || pelvis < 0 || static_cast<std::uint32_t>(pelvis) >= n) return n;
+    const float dx = pose[16 * pelvis + 12] - o.skater_position.x, dy = pose[16 * pelvis + 13] - o.skater_position.y,
+                dz = pose[16 * pelvis + 14] - o.skater_position.z;
+    if (dx * dx + dy * dy + dz * dz <= 16.0f) return n;
+    static unsigned s_logs = 0;
+    if (s_logs++ < 20) Logf("SkateV Legacy: a stale pose %.1f m off the skater was not shown", std::sqrt(dx * dx + dy * dy + dz * dz));
+    return 0;
+}
+
 // Turns `current` toward `target` by at most `maxStep` degrees.
 float TurnToward(float current, float target, float maxStep) {
     float d = std::fmod(target - current + 540.0f, 360.0f) - 180.0f;
@@ -2205,7 +2218,7 @@ void UpdateActive(Session& s, const Config& cfg, const SvPad& pad) {
             }
         }
         static std::vector<float> s_pose(512 * 16);
-        const std::uint32_t n = g_runtime.CharacterPose(s_pose.data(), 512);
+        const std::uint32_t n = FreshPose(g_runtime.CharacterPose(s_pose.data(), 512), s_pose.data(), s_hitBones[0], o);
         const bool posed = n > 0 && static_cast<int>(n) == s_bones;
         if (posed) {
             posehook::PublishPose(s_pose.data(), static_cast<int>(n));
