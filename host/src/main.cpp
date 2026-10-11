@@ -65,7 +65,7 @@ struct Config {
     bool verboseLog = false;  // VerboseLog=1: periodic runtime log lines (perf, skater trace, collision streaming)
     bool loadRuntime = true;  // Runtime=0: ASI + frame-timing log only (A/B testing)
     bool posePed = true;      // PosePed: Skate's pose on the real ped (ped vtable slot 65 wrapper)
-    bool carryBoard = true;   // CarryBoard (SkateMods): the board picked in the wheel stays in hand; E/F get on
+    bool carryBoard = false;  // CarryBoard (SkateMods): the board picked in the wheel stays in hand; E/F get on (off: SK8V's way)
     bool liveClip = false;    // LiveClip=1: live_clip.h (Skate's pose also through GTA's anim, the owned clip)
     bool stallSampler = false; // StallSampler=1: stall_sampler.h (stack samples of stalled script frames)
     // Shooting on the board, GTA drive-by layout: GunButton (XInput mask,
