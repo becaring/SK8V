@@ -70,6 +70,33 @@ void Logf(const char* format, const char* a, const char* b = "") {
 }
 
 // Registers the part's loose YDR/YTYP once and asks for its model; true when loaded.
+// GTA's loose-file registration and type load, guarded: in a long store visit
+// (hundreds of parts looked at) the registrar wrote through a null pointer
+// inside GTA and Script Hook V stopped the whole script (10-11). A fault
+// here fails that one part instead.
+bool SafeRegister(streaming::Register reg, std::uint32_t* out, const char* path, const char* name) {
+    __try {
+        reg(out, path, true, name, false, false);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool SafeTypeLoad(streaming::TypeLoad load, const char* name) {
+    __try {
+        load(name);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// New part models registered this game session; past this the native board
+// shows (GTA's streaming has room for a few hundred loose files).
+constexpr int kMaxRegistered = 240;
+int g_registered = 0;
+
 bool Ready(const std::string& name) {
     Model& m = g_models[name];
     if (m.failed) return false;
@@ -88,16 +115,33 @@ bool Ready(const std::string& name) {
             m.failed = true;
             return false;
         }
+        if (g_registered >= kMaxRegistered) {
+            static bool s_said = false;
+            if (!s_said) s_said = true, Logf("board parts: %s: %s part models this session, no more (restart GTA for others)", name.c_str(), std::to_string(g_registered).c_str());
+            m.failed = true;
+            return false;
+        }
         const auto reg = streaming::Registrar();
         const std::string ydrName = name + ".ydr", ytypName = name + ".ytyp";
-        reg(&m.ydr, m.ydrPath.c_str(), true, ydrName.c_str(), false, false);
-        reg(&m.ytyp, m.ytypPath.c_str(), true, ytypName.c_str(), false, false);
+        if (!SafeRegister(reg, &m.ydr, m.ydrPath.c_str(), ydrName.c_str()) ||
+            !SafeRegister(reg, &m.ytyp, m.ytypPath.c_str(), ytypName.c_str())) {
+            Logf("board parts: %s: GTA faulted registering it (%s registered)", name.c_str(), std::to_string(g_registered).c_str());
+            m.failed = true;
+            g_registered = kMaxRegistered;  // GTA's streaming is unwell: no more this session
+            return false;
+        }
+        ++g_registered;
         if (m.ydr == ~0u || m.ytyp == ~0u) {
             Logf("board parts: %s: registration failed", name.c_str());
             m.failed = true;
             return false;
         }
-        streaming::TypeLoader()(ytypName.c_str());
+        if (!SafeTypeLoad(streaming::TypeLoader(), ytypName.c_str())) {
+            Logf("board parts: %s: GTA faulted loading its type", name.c_str());
+            m.failed = true;
+            g_registered = kMaxRegistered;
+            return false;
+        }
         m.typed = true;
         m.requested = GetTickCount64();
     }
