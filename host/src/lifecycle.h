@@ -57,6 +57,10 @@ const char* Blocked(Ped ped, bool strict, const Settings& settings);
 // on foot). True while it is doing so.
 bool EnteringVehicle(Ped ped);
 
+// SkateMods: a vehicle within `radius` metres of the ped, where Y (INPUT_ENTER)
+// is GTA's to get in: Y with the board in hand then stays GTA's.
+bool VehicleNear(Ped ped, float radius);
+
 // Rising edge of a button chord (the menu chord).
 class BoardAction {
 public:

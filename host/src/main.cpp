@@ -2377,7 +2377,7 @@ void LifecycleFrame(Session& s, const Config& cfg, bool f6) {
         // without picking the board in the wheel once more.
         static bool s_yWas = false;
         const bool yHeld = (pad.buttons & 0x8000) != 0;
-        const bool yBoard = yHeld && !s_yWas && s.boardWeaponWas && now >= s.suppressEnterUntil;
+        const bool yBoard = yHeld && !s_yWas && s.boardWeaponWas && now >= s.suppressEnterUntil && !lifecycle::VehicleNear(player, 3.5f);
         s_yWas = yHeld;
         if (yBoard) Log("SkateV Legacy: Y with the board in hand");
         if (f6 || wheel || yBoard) TryEnter(s, cfg, !f6);

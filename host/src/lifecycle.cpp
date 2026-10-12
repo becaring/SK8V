@@ -25,6 +25,12 @@ bool EnteringVehicle(Ped ped) {
            Call<BOOL>(gta::IS_PED_HANGING_ON_TO_VEHICLE, ped);
 }
 
+bool VehicleNear(Ped ped, float radius) {
+    constexpr UINT64 kIsAnyVehicleNearPoint = 0x61E1DD6125A3EEE6; // IS_ANY_VEHICLE_NEAR_POINT
+    const Vector3 at = Call<Vector3>(gta::GET_ENTITY_COORDS, ped, 1);
+    return Call<BOOL>(kIsAnyVehicleNearPoint, at.x, at.y, at.z, radius) != 0;
+}
+
 const char* Blocked(Ped ped, bool strict, const Settings& settings) {
     // Story Mode only (AGENTS.md hard scope).
     if (Call<BOOL>(gta::NETWORK_IS_SESSION_STARTED) || Call<BOOL>(gta::NETWORK_IS_GAME_IN_PROGRESS))
