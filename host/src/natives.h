@@ -332,6 +332,9 @@ SV_NATIVE(SET_FOLLOW_PED_CAM_VIEW_MODE, 0x5A4F9EDF1673F704)
 SV_NATIVE(GET_FOLLOW_PED_CAM_VIEW_MODE, 0x8D4D46230B2C353A)
 // dynamic_world.cpp PedsSurvive: a knocked ped cannot die until it is up again.
 SV_NATIVE(SET_ENTITY_INVINCIBLE, 0x3882114BDE571AD4)
+// vehicle_survey.cpp: probes in a vehicle's model space.
+SV_NATIVE(GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS, 0x1899F328B0E12848)
+SV_NATIVE(GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS, 0x2274BC1C4885E333)
 #undef SV_NATIVE
 
 // On-screen text with GTA's font 4. kRight ends at `edge`; kWrap wraps at `edge`.

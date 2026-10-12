@@ -63,6 +63,9 @@ public:
     // Vehicle damage from Skate's impulses (VehicleDamage*): a vehicle whose
     // summed impulse this frame reaches `min` N s takes SET_VEHICLE_DAMAGE of
     // impulse * scale at the strongest contact, dent radius `radius`.
+    // How much of Skate's impulse pushes vehicles (1: all; less: the car
+    // bounces less when the skater lands on or hits it). Dents follow it.
+    void SetVehiclePush(float push) { vehiclePush_ = push < 0.0f ? 0.0f : push; }
     void SetVehicleDamage(bool on, float scale, float min, float radius) {
         damage_ = on, damageScale_ = scale, damageMin_ = min, damageRadius_ = radius;
     }
@@ -112,6 +115,7 @@ private:
     void Knocked(int ped, float impulse);
     bool damage_ = true;
     float damageScale_ = 0.5f, damageMin_ = 200.0f, damageRadius_ = 150.0f;
+    float vehiclePush_ = 1.0f;
     std::uint32_t damageLogs_ = 0;
     std::vector<SvPedPart> parts_;
     // Ped pushes waiting for GTA to switch the ped to its ragdoll (a push on

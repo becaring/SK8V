@@ -372,6 +372,11 @@ using SvSetHippieJumpFn = std::uint32_t(__cdecl*)(void*, float);
 // sv_action_cam(rt, mode, at[3], velocity[3], dt, out[7]): the cinematic camera (mode 1) or the skate
 // filmer (2) for the skater at `at`; out = eye xyz, look xyz, fov. Mode 0 resets. Optional export.
 using SvActionCamFn = std::uint32_t(__cdecl*)(void*, std::uint32_t, const float*, const float*, float, float*);
+// Vehicle shapes from probes (vehicle_shapes.rs, contributed by GTAxSkate). Optional exports.
+using SvVehicleNeedsShapeFn = std::uint32_t(__cdecl*)(void*, std::uint32_t model);
+using SvModelProbeFn = std::uint32_t(__cdecl*)(void* ctx, const float* from, const float* to, float* hit);
+using SvVehicleSurveyFn = std::uint32_t(__cdecl*)(void*, std::uint32_t model, const float* min, const float* max,
+                                                  SvModelProbeFn probe, void* ctx);
 // sv_set_difficulty(rt, index): Skate 3's physics_mode, 0 easy, 1 normal,
 // 2 hardcore, 3 motorized; live and for later sessions. Returns 1 when queued.
 // Export: sv_set_difficulty.

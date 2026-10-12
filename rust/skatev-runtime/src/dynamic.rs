@@ -102,6 +102,7 @@ impl Templates {
         let masses = std::fs::read_to_string(world_cache.with_extension("prop-masses.txt"))
             .map(|t| parse_masses(&t))
             .unwrap_or_default();
+        let _ = crate::vehicle_shapes::TEMPLATE_DIR.set(world_cache.with_extension("prop-models"));
         Self { directory: world_cache.with_extension("prop-models"), models: HashMap::new(), extents: HashMap::new(), masses, standoff: SKITCH_STANDOFF }
     }
 
@@ -247,6 +248,9 @@ impl Templates {
             }
             if let Some(Some(model)) = self.models.get(&body.model) {
                 triangles.extend(model.iter().map(|(t, surface)| { let (p, id) = body.transform(t); (p, id, *surface) }));
+            } else if let Some(shape) = crate::vehicle_shapes::surveyed(body.model) {
+                // No extracted bound: the host's survey of the model (vehicle_shapes.rs).
+                triangles.extend(shape.iter().map(|t| { let (p, id) = body.transform(t); (p, id, 0) }));
             } else if body.allow_box {
                 triangles.extend(box_triangles(&body.fallback).into_iter().map(|(p, id)| (p, id, 0)));
             }

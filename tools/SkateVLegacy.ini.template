@@ -47,6 +47,9 @@ SkateRadio=
 ; PedsSurvive: 1 = peds the board knocks down cannot die until they are up again (bowled over, not
 ;   killed; with PedLaunch=0 they are pushed rather than launched). 0 = as Skate's impulse leaves them.
 PedsSurvive=0
+; VehicleShapes: 1 = a vehicle model with no extracted bound (most DLC cars) is surveyed once with probes, so it
+;   has a roof, hood and trunk to ride and a gap under it to hippie jump, not its bounding box. 0 = the box.
+VehicleShapes=1
 DrawBoard=1
 ; Native Skate board: owned skeletal drawable, original texture/normal/specular inputs, GTA lighting and shadows.
 BoardNative=1

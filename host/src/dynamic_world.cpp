@@ -445,7 +445,7 @@ void DynamicWorld::ApplyImpulses(const SvDynamicImpulse* impulses, std::uint32_t
     Hit hits[16];
     std::uint32_t hitCount = 0;
     for (std::uint32_t i = 0; i < count; ++i) {
-        const SvDynamicImpulse& j = impulses[i];
+        SvDynamicImpulse j = impulses[i];  // a copy: a vehicle's impulse is scaled (VehiclePush)
         const auto kind = static_cast<EntityKind>((j.tag >> 28) & 0x7u);
         const int entity = static_cast<int>(j.tag & 0x0FFFFFFFu);
         if (!Call<BOOL>(gta::DOES_ENTITY_EXIST, entity)) continue;
@@ -488,6 +488,8 @@ void DynamicWorld::ApplyImpulses(const SvDynamicImpulse* impulses, std::uint32_t
         // entity's local frame; not mass-scaled. Not 4 (APPLY_TYPE_TORQUE): a
         // car took 0.136 of an expected 1.875 m/s. A real hit (not resting/rolling contact) also plays GTA's own
         // impact sound for the vehicle or prop (bPlayAudio).
+        if (kind == EntityKind::Vehicle && vehiclePush_ != 1.0f)
+            j.impulse = {j.impulse.x * vehiclePush_, j.impulse.y * vehiclePush_, j.impulse.z * vehiclePush_};
         const float strength = std::sqrt(j.impulse.x * j.impulse.x + j.impulse.y * j.impulse.y + j.impulse.z * j.impulse.z);
         Call<void>(gta::APPLY_FORCE_TO_ENTITY, entity, 1, j.impulse.x, j.impulse.y, j.impulse.z, ox, oy, oz, 0,
                    0 /*bLocalForce*/, 1 /*bLocalOffset*/, 0 /*bScaleByMass*/, strength >= 150.0f ? 1 : 0 /*bPlayAudio*/,

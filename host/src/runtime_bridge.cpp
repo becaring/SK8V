@@ -69,6 +69,9 @@ bool RuntimeBridge::Load(const wchar_t* dllPath, const std::string& dataRoot, co
     optional(shopRide_, "sv_shop_ride");
     // Optional: the cinematic cameras.
     actionCam_ = reinterpret_cast<SvActionCamFn>(GetProcAddress(module_, "sv_action_cam"));
+    // Optional: vehicle shapes from probes.
+    vehicleNeedsShape_ = reinterpret_cast<SvVehicleNeedsShapeFn>(GetProcAddress(module_, "sv_vehicle_needs_shape"));
+    vehicleSurvey_ = reinterpret_cast<SvVehicleSurveyFn>(GetProcAddress(module_, "sv_vehicle_survey"));
     sym(setVerboseLog_, "sv_set_verbose_log");
     sym(setSkitchStandoff_, "sv_set_skitch_standoff");
     sym(skitchVehicle_, "sv_skitch_vehicle");
@@ -354,6 +357,12 @@ bool RuntimeBridge::ShopRestPose(const float (&at)[16], SvBoardPose& out) {
     return runtime_ && shopRestPose_ && shopRestPose_(runtime_, at, &out) != 0;
 bool RuntimeBridge::ActionCam(int mode, const float (&at)[3], const float (&velocity)[3], float dt, float (&out)[7]) {
     return runtime_ && actionCam_ && actionCam_(runtime_, static_cast<std::uint32_t>(mode), at, velocity, dt, out) != 0;
+bool RuntimeBridge::VehicleNeedsShape(std::uint32_t model) {
+    return runtime_ && vehicleNeedsShape_ && vehicleNeedsShape_(runtime_, model) != 0;
+}
+
+int RuntimeBridge::VehicleSurvey(std::uint32_t model, const float (&min)[3], const float (&max)[3], SvModelProbeFn probe, void* ctx) {
+    return runtime_ && vehicleSurvey_ ? static_cast<int>(vehicleSurvey_(runtime_, model, min, max, probe, ctx)) : 0;
 }
 
 bool RuntimeBridge::SetEquipment(float truck, float wheel) {

@@ -81,6 +81,9 @@ public:
                     SvProbeFn probe, void* ctx, float* out, int max, std::vector<std::string>& models);
     bool HasActionCam() const { return actionCam_ != nullptr; }
     bool ActionCam(int mode, const float (&at)[3], const float (&velocity)[3], float dt, float (&out)[7]);
+    bool HasVehicleSurvey() const { return vehicleNeedsShape_ && vehicleSurvey_; }
+    bool VehicleNeedsShape(std::uint32_t model);
+    int VehicleSurvey(std::uint32_t model, const float (&min)[3], const float (&max)[3], SvModelProbeFn probe, void* ctx);
     bool SetVerboseLog(bool enabled);
     bool SetSkitchStandoff(float metres);
     int SkitchVehicle() const;
@@ -144,6 +147,8 @@ private:
     SvShopDisplayFn shopDisplay_ = nullptr;
     SvShopRideFn shopRide_ = nullptr;
     SvActionCamFn actionCam_ = nullptr;
+    SvVehicleNeedsShapeFn vehicleNeedsShape_ = nullptr;
+    SvVehicleSurveyFn vehicleSurvey_ = nullptr;
     SvSetVerboseLogFn setVerboseLog_ = nullptr;
     SvSetSkitchStandoffFn setSkitchStandoff_ = nullptr;
     SvSkitchVehicleFn skitchVehicle_ = nullptr;

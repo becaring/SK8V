@@ -32,6 +32,7 @@
 #include "lifecycle.h"
 #include "thread_census.h"
 #include "menu.h"
+#include "vehicle_survey.h"
 #include "ps_pad.h"
 #include "skate_map.h"
 #include "map_states.h"
@@ -73,6 +74,7 @@ struct Config {
     bool skateSpots = true;      // SkateSpots: GTA's skate parks as blips on the map
     bool boardShop = true;    // BoardShop: Skate 3's boards and parts for sale in street clothing stores (G)
     bool wheelsFromPaint = true; // WheelsFromPaint: painted wheels set the wheel hardness (matte soft .. metallic hard)
+    bool vehicleShapes = true; // VehicleShapes: survey vehicles without an extracted bound (a roof to ride, a gap to hippie jump)
     bool drawBoard = true;    // DrawBoard: the native board object (and its mesh fallback)
     bool showDebug = false;   // ShowDebug=1: old debug text HUD (the original Skate HUD is hud_overlay)
     bool verboseLog = false;  // VerboseLog=1: periodic runtime log lines (perf, skater trace, collision streaming)
@@ -163,6 +165,7 @@ struct Config {
     // Radius is in SET_VEHICLE_DAMAGE's own units (scripts use tens to
     // hundreds; 0.5 dents nothing).
     float vehicleDamageScale = 0.5f, vehicleDamageMin = 200.0f, vehicleDamageRadius = 150.0f;
+    float vehiclePush = 1.0f; // VehiclePush: how much of Skate's impulse pushes vehicles (less: they bounce less)
     // GTA delegation: swim when the skater's chest is under water (water this
     // deep over the feet; GTA's ped starts swimming at about the same depth),
     // climb over a barrier on X, X off the board.
@@ -264,6 +267,7 @@ const Key kKeys[] = {
     {"SkateSpots", Store<&Config::skateSpots>},
     {"BoardShop", Store<&Config::boardShop>},
     {"WheelsFromPaint", Store<&Config::wheelsFromPaint>},
+    {"VehicleShapes", Store<&Config::vehicleShapes>},
     {"DrawBoard", Store<&Config::drawBoard>},
     {"ShowDebug", Store<&Config::showDebug>},
     {"VerboseLog", Store<&Config::verboseLog>},
@@ -360,6 +364,7 @@ const Key kKeys[] = {
     {"PedGetUpSpeech", [](Config& c, const std::string& v) { c.pedGetUpSpeech = Speech(v); }},
     {"VehicleDamage", Store<&Config::vehicleDamage>},
     {"VehicleDamageScale", Store<&Config::vehicleDamageScale>},
+    {"VehiclePush", Store<&Config::vehiclePush>},
     {"VehicleDamageMin", Store<&Config::vehicleDamageMin>},
     {"VehicleDamageRadius", Store<&Config::vehicleDamageRadius>},
     {"GtaCharacter", Store<&Config::gtaCharacter>},
@@ -2576,6 +2581,8 @@ void UpdateActive(Session& s, const Config& cfg, const SvPad& pad) {
     if (gather) s.dynamicDue = (std::min)(s.dynamicDue - kStep, kStep);
     if (cfg.dynamicWorld && gather) {
         // Moving GTA entities near the skater, for Skate's contact code.
+        // Vehicles SK8V has no extracted bound for: surveyed once (vehicle_survey.cpp).
+        if (cfg.vehicleShapes) vehiclesurvey::Tick(g_runtime, cfg.dynamicRadius + 10.0f, Log);
         s.world.SetPedParts(cfg.pedHitboxes);
         s.world.SetPedLaunch(cfg.pedLaunch, cfg.pedLaunchScale, cfg.pedLaunchLift, cfg.pedLaunchSpin);
         s.world.SetPedsSurvive(cfg.pedsSurvive);
@@ -2584,6 +2591,8 @@ void UpdateActive(Session& s, const Config& cfg, const SvPad& pad) {
         std::vector<int> presentation = boardparts::Entities();
         presentation.push_back(boardnative::Entity());
         s.world.Gather(s.ped, s.last.board_position, cfg.dynamicRadius, presentation);
+        s.world.SetVehiclePush(cfg.vehiclePush);
+        s.world.Gather(s.ped, s.last.board_position, cfg.dynamicRadius, boardnative::Entity());
         if (const std::string line = s.world.TakePositionLog(); !line.empty()) Log(line.c_str());
         const auto& bodies = s.world.Bodies();
         g_runtime.SetDynamicBodies(bodies.data(), static_cast<std::uint32_t>(bodies.size()));
@@ -3261,7 +3270,12 @@ std::vector<menu::Page> MenuPages(Session& s) {
         Number("Launch tumble", "PedLaunchSpin", D.pedLaunchSpin, 0, 3, 0.1f, Fixed("x%.1f"), Bound("PedLaunchSpin")),
         Choice("Struck ped get-up line", "PedGetUpSpeech", {D.pedGetUpSpeech, "0"}, {"On", "Off"}, Bound("PedGetUpSpeech")),
         Flag("Dent vehicles", "VehicleDamage", D.vehicleDamage, Bound("VehicleDamage")),
-        Number("Dent strength", "VehicleDamageScale", D.vehicleDamageScale, 0, 2, 0.1f, Fixed("x%.1f"), Bound("VehicleDamageScale")),
+        Number("Dent strength", "VehicleDamageScale", D.vehicleDamageScale, 0, 2, 0.05f, Fixed("x%.2f"), Bound("VehicleDamageScale")),
+        // Contributed by GTAxSkate (vehicle shapes): the dent's size and threshold
+        // here too, and how hard the board pushes cars.
+        Number("Dent size", "VehicleDamageRadius", D.vehicleDamageRadius, 0, 300, 10, Fixed("%.0f"), Bound("VehicleDamageRadius")),
+        Number("Dent only from hits over", "VehicleDamageMin", D.vehicleDamageMin, 0, 2000, 50, Fixed("%.0f N s"), Bound("VehicleDamageMin")),
+        Number("How hard the skater pushes cars", "VehiclePush", D.vehiclePush, 0, 1, 0.05f, Fixed("x%.2f"), Bound("VehiclePush")),
     }});
 
     pages.push_back({"BackwardsMan", {

@@ -37,6 +37,7 @@ add_library(SkateVLegacy SHARED
   src/stall_sampler.cpp
   src/physics_level.cpp
   src/menu.cpp
+  src/vehicle_survey.cpp
   src/ps_pad.cpp
   src/board_stencil.cpp
   src/board_tracks.cpp
