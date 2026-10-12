@@ -1,0 +1,14 @@
+[package]
+name = "skate_boards"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Skate 3's skateboard catalog, read from the player's own converted Skate 3 data: the decks, trucks and wheels on offer and the board meshes built from them."
+
+# Spelled out rather than inherited: Skate 3 for GTA V builds this crate from
+# its own workspace too.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+png = "0.18"

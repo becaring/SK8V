@@ -155,6 +155,16 @@ inline std::string Show(const Item& it, const std::string& cur) {
 }
 
 // "3 / 12" for the subtitle bar (selected is 0-based).
+// A list in the menu's look (banner, title bar with a counter, rows with a
+// value, help box), for other modules' menus (the board shop). Rows past
+// the visible count are the caller's to scroll.
+struct PanelRow {
+    std::string label, value;
+    bool selected = false;
+};
+void DrawPanel(const std::string& banner, const std::string& title, const std::string& counter,
+               const std::vector<PanelRow>& rows, const std::string& help);
+
 inline std::string Counter(int selected, int total) { return std::to_string(selected + 1) + " / " + std::to_string(total); }
 
 inline std::string Upper(std::string s) {

@@ -32,7 +32,8 @@ void Report(int crime);
 class DynamicWorld {
 public:
     // Collects the bodies (and ped parts) near `center`, excluding the skater.
-    void Gather(int self, SvVec3 center, float radius, int presentationEntity = 0);
+    // `presentation`: entities drawn for Skate (the board and its parts), never collision.
+    void Gather(int self, SvVec3 center, float radius, const std::vector<int>& presentation = {});
     const std::vector<SvDynamicBody>& Bodies() const { return bodies_; }
     // GTA-side reactions to board contacts (ragdoll peds, push props).
     void React(const SvDynamicHit* hits, std::uint32_t count, SvVec3 boardVelocity);

@@ -2,6 +2,7 @@
 #include "skatev_runtime.h"
 #include <windows.h>
 #include <string>
+#include <vector>
 
 class RuntimeBridge {
 public:
@@ -65,6 +66,19 @@ public:
     bool SetEquipment(float truck, float wheel); // 0..1 each
     bool SetTrainer(const float (&tuning)[11], bool holdFakie); // false: runtime has none
     bool SetHippieJump(float scale); // false: runtime has none
+    // The board shop (optional exports; false / empty when the runtime has none).
+    bool HasShop() const { return shopStart_ && shopText_; }
+    bool ShopStart(const std::string& assets, const std::string& garages);
+    bool ShopCharacter(const std::string& who);
+    bool ShopOpen(int tier);
+    void ShopClose();
+    SvShopResult ShopInput(int input, long long cash);
+    std::string ShopText(int which);
+    bool ShopRestPose(const float (&at)[16], SvBoardPose& out);
+    bool ShopRide(const char* state, float speed, float dt); // true: a part wore through
+    // The boards on show in a store: up to `max` entity matrices (16 floats each) and their models.
+    int ShopDisplay(int tier, const float (&interior)[3], const float (&eye)[3], const float* clerk, unsigned day,
+                    SvProbeFn probe, void* ctx, float* out, int max, std::vector<std::string>& models);
     bool SetVerboseLog(bool enabled);
     bool SetSkitchStandoff(float metres);
     int SkitchVehicle() const;
@@ -118,6 +132,15 @@ private:
     SvSetEquipmentFn setEquipment_ = nullptr;
     SvSetTrainerFn setTrainer_ = nullptr;
     SvSetHippieJumpFn setHippieJump_ = nullptr;
+    SvShopStartFn shopStart_ = nullptr;
+    SvShopCharacterFn shopCharacter_ = nullptr;
+    SvShopOpenFn shopOpen_ = nullptr;
+    SvShopCloseFn shopClose_ = nullptr;
+    SvShopInputFn shopInput_ = nullptr;
+    SvShopTextFn shopText_ = nullptr;
+    SvShopRestPoseFn shopRestPose_ = nullptr;
+    SvShopDisplayFn shopDisplay_ = nullptr;
+    SvShopRideFn shopRide_ = nullptr;
     SvSetVerboseLogFn setVerboseLog_ = nullptr;
     SvSetSkitchStandoffFn setSkitchStandoff_ = nullptr;
     SvSkitchVehicleFn skitchVehicle_ = nullptr;

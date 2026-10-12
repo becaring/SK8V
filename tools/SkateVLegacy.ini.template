@@ -23,6 +23,12 @@ KeyboardHints=1
 GpsWhileSkating=1
 ; SkateSpots: GTA's skate parks (Vespucci Beach, Hawick, Little Seoul, Strawberry, La Mesa) as map blips. 0 turns it off.
 SkateSpots=1
+; BoardShop: Skate 3's boards and parts for sale in Binco, the Discount Store and Suburban (G in the store).
+;   Needs the part models (tools/prepare-board-parts.py). 0 turns it off.
+BoardShop=1
+; WheelsFromPaint: painted wheels from the shop set the wheel hardness (matte soft, gloss medium, metallic hard);
+;   0 keeps WheelHardness.
+WheelsFromPaint=1
 DrawBoard=1
 ; Native Skate board: owned skeletal drawable, original texture/normal/specular inputs, GTA lighting and shadows.
 BoardNative=1

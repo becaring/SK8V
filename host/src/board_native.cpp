@@ -16,21 +16,21 @@ constexpr std::uint32_t Model=util::Joaat("skatev_board");
 void (*g_log)(const char*)=nullptr;
 std::string g_ydr,g_ytyp; int g_object=0;
 bool g_started=false,g_registered=false,g_type=false,g_failed=false;
-bool g_poseReported=false;
+PoseCache g_cache;
 std::uint32_t g_ydrId=~0u,g_ytypId=~0u;
 ULONGLONG g_begin=0;
-// Bone indices of the seven board tags, for the skeleton they were read from.
-std::uintptr_t g_indexedSkeleton=0; int g_indices[7];
 void Log(const char* s){if(g_log)g_log(s);}
-bool Pose(const SvBoardPose& pose) {
+bool Pose(const SvBoardPose& pose) { return PoseObject(g_object,pose,g_cache,g_log); }
+}
+bool PoseObject(int object,const SvBoardPose& pose,PoseCache& cache,void (*log)(const char*)) {
     probe::SkeletonInfo s; const char* why=nullptr;
-    if(!probe::ResolvePedSkeleton(g_object,s,why)||s.count!=7){if(!g_poseReported){char line[256];std::snprintf(line,sizeof(line),"native board: skeleton unavailable (%s, bones=%d); object hidden",why?why:"expected seven bones",s.count);Log(line);g_poseReported=true;}return false;}
-    if(s.skeleton!=g_indexedSkeleton) {
-        g_indexedSkeleton=0;
-        for(int i=0;i<7;++i) { g_indices[i]=probe::BoneIndexByTag(s,static_cast<std::uint16_t>(i)); if(g_indices[i]<0||g_indices[i]>=7)return false; }
-        g_indexedSkeleton=s.skeleton;
+    if(!probe::ResolvePedSkeleton(object,s,why)||s.count!=7){if(!cache.reported&&log){char line[256];std::snprintf(line,sizeof(line),"native board: skeleton unavailable (%s, bones=%d); object hidden",why?why:"expected seven bones",s.count);log(line);cache.reported=true;}return false;}
+    if(s.skeleton!=cache.skeleton) {
+        cache.skeleton=0;
+        for(int i=0;i<7;++i) { cache.indices[i]=probe::BoneIndexByTag(s,static_cast<std::uint16_t>(i)); if(cache.indices[i]<0||cache.indices[i]>=7)return false; }
+        cache.skeleton=s.skeleton;
     }
-    const int* indices=g_indices;
+    const int* indices=cache.indices;
     __try {
         const auto data=*reinterpret_cast<const std::uintptr_t*>(s.skeleton);
         const auto parents=*reinterpret_cast<const std::int16_t* const*>(data+0x38);
@@ -46,12 +46,13 @@ bool Pose(const SvBoardPose& pose) {
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER){return false;}
 }
+namespace {
 void Remove(){if(g_object&&gta::Call<bool>(gta::DOES_ENTITY_EXIST,g_object))gta::Call<void>(gta::DELETE_OBJECT,&g_object);g_object=0;}
 bool Hide(){if(g_object&&gta::Call<bool>(gta::DOES_ENTITY_EXIST,g_object))gta::Call<void>(gta::SET_ENTITY_VISIBLE,g_object,false,false);return false;}
 void Fail(const char* why){Log(why);Remove();g_failed=true;}
 }
 bool Start(const std::wstring& iniPath,const std::wstring& dataRoot,void (*log)(const char*)) {
-    Stop(); g_log=log;g_failed=false;g_poseReported=false;
+    Stop(); g_log=log;g_failed=false;g_cache.reported=false;
     if(!GetPrivateProfileIntW(L"SkateV",L"BoardNative",1,iniPath.c_str()))return false;
     const auto root=std::filesystem::path(dataRoot)/L"private"/L"board-native";
     const auto ydr=root/L"skatev_board.ydr",ytyp=root/L"skatev_board.ytyp";
@@ -102,7 +103,7 @@ bool Tick(bool skating,const SvBoardPose& pose) {
     gta::Call<void>(gta::SET_ENTITY_COORDS_NO_OFFSET,g_object,pose.entity[12],pose.entity[13],pose.entity[14],false,false,false);
     gta::Call<void>(gta::SET_ENTITY_QUATERNION,g_object,quaternion.x,quaternion.y,quaternion.z,quaternion.w);
     const bool posed=Pose(pose);
-    if(!posed&&!g_poseReported){Log("native board: invalid bone tags, parents, or matrices; object hidden");g_poseReported=true;}
+    if(!posed&&!g_cache.reported){Log("native board: invalid bone tags, parents, or matrices; object hidden");g_cache.reported=true;}
     gta::Call<void>(gta::SET_ENTITY_VISIBLE,g_object,posed,false);return posed;
 }
 void Stop(){Remove();g_started=false;}

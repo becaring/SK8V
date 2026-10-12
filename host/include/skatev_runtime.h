@@ -703,3 +703,24 @@ static_assert(sizeof(SvBoardPose) == 528);
 static_assert(offsetof(SvBoardPose, entity) == 16);
 static_assert(offsetof(SvBoardPose, world) == 80);
 using SvGetBoardPoseFn = std::uint32_t(__cdecl*)(const void*, SvBoardPose*);
+
+// The board shop (board_shop.rs, contributed by GTAxSkate). Optional exports.
+struct SvShopResult {
+    std::uint32_t kind;   // 0 nothing, 1 closed, 2 bought (charge price), 3 riding an owned part, 4 default board, 5 too little money
+    std::uint32_t price;
+};
+using SvShopStartFn = std::uint32_t(__cdecl*)(void*, const char* assets, const char* garages);
+using SvShopCharacterFn = std::uint32_t(__cdecl*)(void*, const char* who);
+using SvShopOpenFn = std::uint32_t(__cdecl*)(void*, std::uint32_t tier);
+using SvShopCloseFn = void(__cdecl*)(void*);
+using SvShopInputFn = std::uint32_t(__cdecl*)(void*, std::uint32_t input, std::int64_t cash, SvShopResult* out);
+using SvShopTextFn = std::uint32_t(__cdecl*)(void*, std::uint32_t which, char* buf, std::uint32_t cap);
+using SvShopRestPoseFn = std::uint32_t(__cdecl*)(void*, const float* at, SvBoardPose* out);
+// A line the host casts for the store's show: writes where it hits, returns 1 (else 0).
+// sv_shop_ride(rt, state, speed, dt): a frame of skating for the board's wear; 1 when a part wore through.
+using SvShopRideFn = std::uint32_t(__cdecl*)(void*, const char* state, float speed, float dt);
+using SvProbeFn = std::uint32_t(__cdecl*)(void* ctx, const float* from, const float* to, float* hit);
+// sv_shop_display(rt, tier, interior[3], eye[3], clerk[6] or null, day, probe, ctx, out[max*16], max,
+// models, cap): the boards on show (entity matrices, comma lists of models a line each); returns how many.
+using SvShopDisplayFn = std::uint32_t(__cdecl*)(void*, std::uint32_t, const float*, const float*, const float*,
+                                                std::uint32_t, SvProbeFn, void*, float*, std::uint32_t, char*, std::uint32_t);

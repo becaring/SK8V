@@ -1,5 +1,6 @@
 #include "runtime_bridge.h"
 #include <type_traits>
+#include <cstring>
 
 bool RuntimeBridge::Load(const wchar_t* dllPath, const std::string& dataRoot, const std::string& worldCache,
                          const std::string& logPath, std::uint32_t skaterTriangles, std::uint32_t presentationFlags, std::string& error) {
@@ -53,6 +54,19 @@ bool RuntimeBridge::Load(const wchar_t* dllPath, const std::string& dataRoot, co
     // Optional: trainer tuning.
     setTrainer_ = reinterpret_cast<SvSetTrainerFn>(GetProcAddress(module_, "sv_set_trainer"));
     setHippieJump_ = reinterpret_cast<SvSetHippieJumpFn>(GetProcAddress(module_, "sv_set_hippie_jump"));
+    // Optional: the board shop.
+    auto optional = [&](auto& fn, const char* name) {
+        fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(GetProcAddress(module_, name));
+    };
+    optional(shopStart_, "sv_shop_start");
+    optional(shopCharacter_, "sv_shop_character");
+    optional(shopOpen_, "sv_shop_open");
+    optional(shopClose_, "sv_shop_close");
+    optional(shopInput_, "sv_shop_input");
+    optional(shopText_, "sv_shop_text");
+    optional(shopRestPose_, "sv_shop_rest_pose");
+    optional(shopDisplay_, "sv_shop_display");
+    optional(shopRide_, "sv_shop_ride");
     sym(setVerboseLog_, "sv_set_verbose_log");
     sym(setSkitchStandoff_, "sv_set_skitch_standoff");
     sym(skitchVehicle_, "sv_skitch_vehicle");
@@ -279,6 +293,63 @@ bool RuntimeBridge::SetHippieJump(float scale) {
 
 bool RuntimeBridge::SetTrainer(const float (&tuning)[11], bool holdFakie) {
     return runtime_ && setTrainer_ && setTrainer_(runtime_, tuning, holdFakie ? 1u : 0u) != 0;
+bool RuntimeBridge::ShopStart(const std::string& assets, const std::string& garages) {
+    return runtime_ && shopStart_ && shopStart_(runtime_, assets.c_str(), garages.c_str()) != 0;
+}
+
+bool RuntimeBridge::ShopCharacter(const std::string& who) {
+    return runtime_ && shopCharacter_ && shopCharacter_(runtime_, who.c_str()) != 0;
+}
+
+bool RuntimeBridge::ShopOpen(int tier) {
+    return runtime_ && shopOpen_ && shopOpen_(runtime_, static_cast<std::uint32_t>(tier)) != 0;
+}
+
+void RuntimeBridge::ShopClose() {
+    if (runtime_ && shopClose_) shopClose_(runtime_);
+}
+
+SvShopResult RuntimeBridge::ShopInput(int input, long long cash) {
+    SvShopResult out{1, 0};
+    if (runtime_ && shopInput_) shopInput_(runtime_, static_cast<std::uint32_t>(input), cash, &out);
+    return out;
+}
+
+std::string RuntimeBridge::ShopText(int which) {
+    if (!runtime_ || !shopText_) return {};
+    std::string text(4096, '\0');
+    std::uint32_t need = shopText_(runtime_, static_cast<std::uint32_t>(which), text.data(), static_cast<std::uint32_t>(text.size()));
+    if (need > text.size()) {
+        text.assign(need, '\0');
+        need = shopText_(runtime_, static_cast<std::uint32_t>(which), text.data(), static_cast<std::uint32_t>(text.size()));
+    }
+    text.resize(need ? need - 1 : 0);
+    return text;
+}
+
+int RuntimeBridge::ShopDisplay(int tier, const float (&interior)[3], const float (&eye)[3], const float* clerk, unsigned day,
+                               SvProbeFn probe, void* ctx, float* out, int max, std::vector<std::string>& models) {
+    models.clear();
+    if (!runtime_ || !shopDisplay_ || max <= 0) return 0;
+    std::string text(8192, '\0');
+    const std::uint32_t n = shopDisplay_(runtime_, static_cast<std::uint32_t>(tier), interior, eye, clerk, day, probe, ctx, out,
+                                         static_cast<std::uint32_t>(max), text.data(), static_cast<std::uint32_t>(text.size()));
+    text.resize(std::strlen(text.c_str()));
+    std::size_t at = 0;
+    while (models.size() < n && at < text.size()) {
+        const std::size_t end = text.find('\n', at);
+        models.push_back(text.substr(at, end == std::string::npos ? std::string::npos : end - at));
+        at = end == std::string::npos ? text.size() : end + 1;
+    }
+    return static_cast<int>(models.size() == n ? n : 0);
+}
+
+bool RuntimeBridge::ShopRide(const char* state, float speed, float dt) {
+    return runtime_ && shopRide_ && shopRide_(runtime_, state, speed, dt) != 0;
+}
+
+bool RuntimeBridge::ShopRestPose(const float (&at)[16], SvBoardPose& out) {
+    return runtime_ && shopRestPose_ && shopRestPose_(runtime_, at, &out) != 0;
 }
 
 bool RuntimeBridge::SetEquipment(float truck, float wheel) {

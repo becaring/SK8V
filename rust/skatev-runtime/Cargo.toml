@@ -19,6 +19,8 @@ svwc = { path = "../svwc" }
 skate-hud = { path = "../skate-hud" }
 serde_json = "1"
 rustc-hash = "1.1"
+# The board shop's catalog and garage (contributed by GTAxSkate).
+skate_boards = { path = "../skate-boards" }
 png = "0.17"
 # Skate 3 AEMS audio port (docs/AEMS.md); the live engine renders dry voices.
 skate-aems = { path = "../skate-aems" }

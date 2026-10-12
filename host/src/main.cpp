@@ -19,6 +19,8 @@
 #include "board_stencil.h"
 #include "board_tracks.h"
 #include "streaming.h"
+#include "board_parts.h"
+#include "board_shop.h"
 #include "ped_collision_native.h"
 #include "dynamic_world.h"
 #include "gta_audio.h"
@@ -66,6 +68,8 @@ struct Config {
     bool keyboardHints = true; // KeyboardHints: the keys down the left side while skating on the keyboard
     bool gpsWhileSkating = true; // GpsWhileSkating: GTA's route to the waypoint stays on in Skate mode
     bool skateSpots = true;      // SkateSpots: GTA's skate parks as blips on the map
+    bool boardShop = true;    // BoardShop: Skate 3's boards and parts for sale in street clothing stores (G)
+    bool wheelsFromPaint = true; // WheelsFromPaint: painted wheels set the wheel hardness (matte soft .. metallic hard)
     bool drawBoard = true;    // DrawBoard: the native board object (and its mesh fallback)
     bool showDebug = false;   // ShowDebug=1: old debug text HUD (the original Skate HUD is hud_overlay)
     bool verboseLog = false;  // VerboseLog=1: periodic runtime log lines (perf, skater trace, collision streaming)
@@ -245,6 +249,8 @@ const Key kKeys[] = {
     {"KeyboardHints", Store<&Config::keyboardHints>},
     {"GpsWhileSkating", Store<&Config::gpsWhileSkating>},
     {"SkateSpots", Store<&Config::skateSpots>},
+    {"BoardShop", Store<&Config::boardShop>},
+    {"WheelsFromPaint", Store<&Config::wheelsFromPaint>},
     {"DrawBoard", Store<&Config::drawBoard>},
     {"ShowDebug", Store<&Config::showDebug>},
     {"VerboseLog", Store<&Config::verboseLog>},
@@ -660,7 +666,7 @@ void DrawInputs(const SvPad& pad) {
 
 // Skate and the lifecycle see a neutral pad while the settings menu is open.
 SvPad ReadPad() {
-    if (!menu::IsOpen()) return ReadPadRaw();
+    if (!menu::IsOpen() && !boardshop::IsOpen()) return ReadPadRaw();
     SvPad idle{};
     idle.connected = 1;
     return idle;
@@ -1154,6 +1160,7 @@ void Leave(Session& s, const Config& cfg, const char* why, bool voluntary) {
     s.poseFadingOut = true;
     s.poseFadeOutSince = GetTickCount();
     boardnative::Stop(); // remove the instance; keep loaded model/type resident
+    boardparts::Stop();
     pedcollision::Stop();
     if (s.ped && Call<BOOL>(gta::DOES_ENTITY_EXIST, s.ped)) SetGtaPosing(s.ped, true);
     // Final Skate pose before Skate stops stepping.
@@ -2230,7 +2237,9 @@ void UpdateActive(Session& s, const Config& cfg, const SvPad& pad) {
         s.world.SetPedLaunch(cfg.pedLaunch, cfg.pedLaunchScale, cfg.pedLaunchLift, cfg.pedLaunchSpin);
         s.world.SetPedVoices(cfg.pedPain, cfg.pedGetUpSpeech);
         s.world.SetVehicleDamage(cfg.vehicleDamage, cfg.vehicleDamageScale, cfg.vehicleDamageMin, cfg.vehicleDamageRadius);
-        s.world.Gather(s.ped, s.last.board_position, cfg.dynamicRadius, boardnative::Entity());
+        std::vector<int> presentation = boardparts::Entities();
+        presentation.push_back(boardnative::Entity());
+        s.world.Gather(s.ped, s.last.board_position, cfg.dynamicRadius, presentation);
         if (const std::string line = s.world.TakePositionLog(); !line.empty()) Log(line.c_str());
         const auto& bodies = s.world.Bodies();
         g_runtime.SetDynamicBodies(bodies.data(), static_cast<std::uint32_t>(bodies.size()));
@@ -2436,9 +2445,12 @@ void UpdateActive(Session& s, const Config& cfg, const SvPad& pad) {
 
     Lap(kPartWorld);
     SvBoardPose boardPose{};
-    const bool nativeBoard = cfg.drawBoard && g_runtime.BoardPose(boardPose)
-        && boardnative::Tick(true, boardPose);
-    if (!cfg.drawBoard || boardPose.bone_count != 7) boardnative::Tick(false, SvBoardPose{});
+    const bool havePose = cfg.drawBoard && g_runtime.BoardPose(boardPose) && boardPose.bone_count == 7;
+    // The board shop's parts replace the native board once all of them are in.
+    const bool shopParts = havePose && boardparts::Tick(true, boardPose);
+    const bool nativeBoard = shopParts || (havePose && boardnative::Tick(true, boardPose));
+    if (!havePose || shopParts) boardnative::Tick(false, SvBoardPose{});
+    if (!havePose) boardparts::Tick(false, SvBoardPose{});
     BoardWeather(s, cfg, nativeBoard ? &boardPose : nullptr);
     if (cfg.drawSkater && !nativeBoard) DrawBoardMesh();
     if (g_quirkRequested.exchange(false) && cfg.backwardsMan) g_runtime.TriggerQuirk(0);
@@ -2907,6 +2919,18 @@ std::vector<menu::Page> MenuPages(Session& s) {
         }),
     }});
 
+    // The board in hand in GTA (contributed by GTAxSkate, board shop): where it
+    // sits on the hidden hammer; read by board_shop.cpp from the INI.
+    pages.push_back({"Board in hand", {
+        Flag("Board from the wheel stays in hand (E or F gets on)", "CarryBoard", false, Bound("CarryBoard")),
+        Number("Along the handle", "CarryZ", 0.3f, -1.0f, 1.0f, 0.05f, Fixed("%.2f m")),
+        Number("Sideways", "CarryX", 0.0f, -0.5f, 0.5f, 0.02f, Fixed("%.2f m")),
+        Number("Forward", "CarryY", 0.0f, -0.5f, 0.5f, 0.02f, Fixed("%.2f m")),
+        Number("Turn about X", "CarryTurnX", 0.0f, -180.0f, 180.0f, 15.0f, Fixed("%.0f deg")),
+        Number("Turn about Y", "CarryTurnY", 0.0f, -180.0f, 180.0f, 15.0f, Fixed("%.0f deg")),
+        Number("Turn about Z", "CarryTurnZ", 0.0f, -180.0f, 180.0f, 15.0f, Fixed("%.0f deg")),
+    }});
+
     pages.push_back({"Audio", {
         Number("Skate volume", "AudioGtaGainDb", 1.4f, -30, 24, 1, Fixed("%+.1f dB"),
                [](const std::string& v) { gtaaudio::SetGainDb(static_cast<float>(std::atof(v.c_str()))); }),
@@ -3085,6 +3109,14 @@ void ScriptMain() {
         Logf("SkateV Legacy: hippie jump x%.2f (%s)", cfg.hippieJump,
              g_runtime.SetHippieJump(cfg.hippieJump) ? "runtime option present" : "runtime option absent");
         g_runtime.SetVerboseLog(cfg.verboseLog);
+        // The board shop's part models and the shop itself (garages in the game folder).
+        if (cfg.drawBoard && boardparts::Start(std::filesystem::u8path(cfg.dataRoot).wstring(), Log) && cfg.boardShop)
+            boardshop::Start(g_runtime, cfg.dataRoot, util::Narrow(g_gameDir), Log, [](float hardness) {
+                // Painted wheels ride as hard as their paint; Skate 3's own keep WheelHardness.
+                const float wheels = g_config.wheelsFromPaint && hardness >= 0.0f ? hardness : g_config.wheelHardness;
+                if (g_runtime.SetEquipment(g_config.truckTightness, wheels) && hardness >= 0.0f)
+                    Logf("board shop: painted wheels ride at hardness %.2f", wheels);
+            });
     }
 
     // Skate audio inside GTA's audio engine (P0-3b); runtime may be absent.
@@ -3226,6 +3258,12 @@ void ScriptMain() {
             }
         }
         StaminaTick(s.state == LifeState::Skating, s.last);
+        if (s.state != LifeState::Skating) boardnative::Tick(false, SvBoardPose{}), boardparts::Tick(false, SvBoardPose{});
+        // The shop opens on foot: in GTA, or walking in Skate mode (not on the board).
+        if (s.state == LifeState::Skating)
+            boardshop::Riding(s.last.state_utf8, std::sqrt(s.last.velocity.x * s.last.velocity.x + s.last.velocity.y * s.last.velocity.y));
+        boardshop::Tick(SkateOwnsPlayer(s) && !(s.state == LifeState::Skating &&
+                                                std::string_view(s.last.state_utf8).rfind("Biped", 0) == 0));
         physlevel::Tick();
         Lap(kPartLevel);
         monitor.Work(monitor.Now() - workStart);

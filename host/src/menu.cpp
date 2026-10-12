@@ -117,6 +117,31 @@ void Row(float x, float y, const std::string& label, const std::string& value, b
     if (!value.empty()) Text(value, 0.0f, y + 0.003f, 0.34f, shade, Align::Right, x + kW - kPad);
 }
 
+void Panel(const std::string& banner, const std::string& title, const std::string& counter,
+           const std::vector<PanelRow>& rows, const std::string& help) {
+    const float margin = (1.0f - Call<float>(gta::GET_SAFE_ZONE_SIZE)) / 2;
+    const float x = margin + 0.02f;
+    float y = margin + 0.04f;
+    Rect(x, y, kW, kBanner, 12, 12, 12, 235);
+    Rect(x, y + kBanner - 0.004f, kW, 0.004f, 255, 110, 0, 255);
+    Text(banner, x + kPad, y + 0.008f, 0.8f, 255);
+    y += kBanner;
+    Rect(x, y, kW, kSub, 255, 110, 0, 235);
+    Text(Upper(title), x + kPad, y + 0.0035f, 0.3f, 255);
+    Text(counter, 0.0f, y + 0.0035f, 0.3f, 255, Align::Right, x + kW - kPad);
+    y += kSub;
+    for (const PanelRow& r : rows) {
+        Row(x, y, r.label, r.value, r.selected);
+        y += kRow;
+    }
+    Rect(x, y, kW, kChevron, 0, 0, 0, 160);
+    Chevron(x + kW / 2 - 0.008f, y + kChevron / 2, true);
+    Chevron(x + kW / 2 + 0.008f, y + kChevron / 2, false);
+    y += kChevron;
+    Rect(x, y, kW, kHelp, 0, 0, 0, 160);
+    Text(help, x + kPad, y + 0.005f, 0.28f, 210, Align::Wrap, x + kW - kPad);
+}
+
 void Draw() {
     // Left-aligned inside GTA's safe zone, like the Interaction Menu.
     const float margin = (1.0f - Call<float>(gta::GET_SAFE_ZONE_SIZE)) / 2;
@@ -277,6 +302,11 @@ void OpenPage(const std::string& title) {
 }
 
 bool IsOpen() { return g_open; }
+
+void DrawPanel(const std::string& banner, const std::string& title, const std::string& counter,
+               const std::vector<PanelRow>& rows, const std::string& help) {
+    Panel(banner, title, counter, rows, help);
+}
 
 void Tick() {
     // Pause (199, 200) stays GTA's; one control at a time, never DISABLE_ALL_CONTROL_ACTIONS
