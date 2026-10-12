@@ -29,6 +29,18 @@ BoardShop=1
 ; WheelsFromPaint: painted wheels from the shop set the wheel hardness (matte soft, gloss medium, metallic hard);
 ;   0 keeps WheelHardness.
 WheelsFromPaint=1
+; CameraView: the view skating starts in: Skate (Skate 3's camera), Near, Middle, Far (GTA's follow camera,
+;   the mouse turns it), FirstPerson or Head (the skater's eyes, the mouse looks round). V cycles them while skating. R (keyboard) cycles the cinematic camera (shots cut like
+;   GTA's car cinematic camera), the skate filmer (low fisheye) and back.
+CameraView=Skate
+; CameraRemember: 1 = skating starts in the view last used (walking and skating keep the same distance), 0 = always CameraView.
+CameraRemember=1
+; CameraFocus: what near, middle and far follow: Skater or Board.
+CameraFocus=Skater
+; The cinematic camera's and the skate filmer's look (R): a GTA timecycle modifier each ("none" for none) and its strength.
+CinemaFilter=NG_filmic01
+FilmerFilter=NG_filmic06
+FilmFilterStrength=0.85
 DrawBoard=1
 ; Native Skate board: owned skeletal drawable, original texture/normal/specular inputs, GTA lighting and shadows.
 BoardNative=1

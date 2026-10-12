@@ -369,6 +369,9 @@ using SvSetEquipmentFn = std::uint32_t(__cdecl*)(void*, float, float);
 using SvSetTrainerFn = std::uint32_t(__cdecl*)(void*, const float*, std::uint32_t);
 // sv_set_hippie_jump(rt, scale): the hippie jump's height, times Skate 3's (overlay patch 1001). Optional.
 using SvSetHippieJumpFn = std::uint32_t(__cdecl*)(void*, float);
+// sv_action_cam(rt, mode, at[3], velocity[3], dt, out[7]): the cinematic camera (mode 1) or the skate
+// filmer (2) for the skater at `at`; out = eye xyz, look xyz, fov. Mode 0 resets. Optional export.
+using SvActionCamFn = std::uint32_t(__cdecl*)(void*, std::uint32_t, const float*, const float*, float, float*);
 // sv_set_difficulty(rt, index): Skate 3's physics_mode, 0 easy, 1 normal,
 // 2 hardcore, 3 motorized; live and for later sessions. Returns 1 when queued.
 // Export: sv_set_difficulty.

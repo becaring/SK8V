@@ -79,6 +79,8 @@ public:
     // The boards on show in a store: up to `max` entity matrices (16 floats each) and their models.
     int ShopDisplay(int tier, const float (&interior)[3], const float (&eye)[3], const float* clerk, unsigned day,
                     SvProbeFn probe, void* ctx, float* out, int max, std::vector<std::string>& models);
+    bool HasActionCam() const { return actionCam_ != nullptr; }
+    bool ActionCam(int mode, const float (&at)[3], const float (&velocity)[3], float dt, float (&out)[7]);
     bool SetVerboseLog(bool enabled);
     bool SetSkitchStandoff(float metres);
     int SkitchVehicle() const;
@@ -141,6 +143,7 @@ private:
     SvShopRestPoseFn shopRestPose_ = nullptr;
     SvShopDisplayFn shopDisplay_ = nullptr;
     SvShopRideFn shopRide_ = nullptr;
+    SvActionCamFn actionCam_ = nullptr;
     SvSetVerboseLogFn setVerboseLog_ = nullptr;
     SvSetSkitchStandoffFn setSkitchStandoff_ = nullptr;
     SvSkitchVehicleFn skitchVehicle_ = nullptr;

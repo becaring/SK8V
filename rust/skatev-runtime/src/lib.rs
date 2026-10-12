@@ -8,6 +8,7 @@ pub mod coords;
 pub mod keyboard;
 pub mod shop;
 pub mod board_shop;
+pub mod action_cam;
 pub mod board_pose;
 pub mod curbs;
 pub mod dynamic;
