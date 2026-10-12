@@ -43,6 +43,7 @@
 #include "natives.h"
 #include "ped_speech.h"
 #include "runtime_bridge.h"
+#include "injuries.h"
 #include "version_guard.h"
 
 namespace {
@@ -106,6 +107,7 @@ struct Config {
     int snow = 0;                  // Snow: 0 auto (GTA's snow level and weather), 1 always, 2 never
     float trackWidth = 0.08f;      // TrackWidth: tread mark width (m)
     bool hallOfMeat = true;        // HallOfMeat=1: Skate 3's bail scoring, broken-bone slow-mo, HoM HUD
+    bool injuries = true;          // Injuries=1: after a hard bail the character limps for a while on foot
     bool hallOfMeatMetrics = false; // HallOfMeatMetrics=1: every metric panel, not only those over threshold
     bool goofy = false;            // Stance=Goofy: Skate profile stance (default Regular: A is the normal push)
     std::string line;              // Line: showcase line files, ';'-separated (local; see rust line.rs)
@@ -291,6 +293,7 @@ const Key kKeys[] = {
     {"GunButton", Store<&Config::gunButton>},
     {"DrawSkater", Store<&Config::drawSkater>},
     {"HallOfMeat", Store<&Config::hallOfMeat>},
+    {"Injuries", Store<&Config::injuries>},
     {"BoardTracks", Store<&Config::boardTracks>},
     {"Snow", Store<&Config::snow>},
     {"TrackWidth", Store<&Config::trackWidth>},
@@ -1139,6 +1142,7 @@ void ImpactGrunts(Session& s, const Config& cfg, const float* pose, const int bo
                     z = (p0.z - p1.z) / dt0 - (p1.z - p2.z) / dt1;
         worst = std::max(worst, std::sqrt(x * x + y * y + z * z));
     }
+    if (s.wipingOut) injuries::Hit(worst);
     const DWORD now = GetTickCount();
     // A new grunt more often than this cut the last one off before it played.
     if (!s.wipingOut || worst <= cfg.bailHitSpeed || now - s.lastGrunt <= 700) return;
@@ -2636,6 +2640,7 @@ void UpdateActive(Session& s, const Config& cfg, const SvPad& pad) {
             s.bailVel = v, s.bailVelValid = dt < 0.1f;
             s.bailPos = o.skater_position, s.bailTick = o.tick;
         } else if (!wipeout && s.wipingOut) {
+            injuries::BailOver(Log);
             s.lineAt = cfg.getUpSpeech.empty() ? 0 : now + 1200;
         }
         if (s.lineAt && now >= s.lineAt) {
@@ -3243,6 +3248,7 @@ std::vector<menu::Page> MenuPages(Session& s) {
     }});
 
     pages.push_back({"Hall of Meat and records", {
+        Flag("Limp after hard bails", "Injuries", D.injuries, Bound("Injuries")),
         Flag("Hall of Meat", "HallOfMeat", D.hallOfMeat, [&s](const std::string& v) {
             const bool on = std::atof(v.c_str()) != 0.0;
             if (g_runtime.IsLoaded() && g_runtime.SetHallOfMeat(on)) {
@@ -3588,6 +3594,9 @@ void ScriptMain() {
         const bool filming = s.state == LifeState::Skating && s.action != 0;
         if (filming) Call<void>(gta::HIDE_HUD_AND_RADAR_THIS_FRAME);
         hudoverlay::Tick(s.state == LifeState::Skating && !filming);
+        hudoverlay::Tick(s.state == LifeState::Skating);
+        injuries::Tick(Call<Ped>(gta::PLAYER_PED_ID), s.state != LifeState::Skating && Call<BOOL>(gta::IS_PED_ON_FOOT, Call<Ped>(gta::PLAYER_PED_ID)),
+                       cfg.injuries, Log);
         Lap(kPartHud);
         const auto raw = static_cast<std::uint16_t>(RawPadButtons());
         if (s.board.Pressed(raw, cfg.life.menuButton)) g_menuToggle.store(true);

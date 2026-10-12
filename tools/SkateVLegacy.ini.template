@@ -68,6 +68,8 @@ HudComposite=-1
 ; Toggle it in the in-game menu (/); the choice is saved here.
 ; HallOfMeatMetrics: 1 = show every metric panel during a bail, not only those past their points threshold.
 HallOfMeat=1
+; Injuries: 1 = after a hard bail (a 9 m/s knock or more) the character limps on foot for 30 s to 2 min.
+Injuries=1
 HallOfMeatMetrics=0
 ; HallOfMeatXray: Skate 3's broken-bone x-ray during a bail (needs tools/prepare-hom-xray.py). 0 disables.
 HallOfMeatXray=1

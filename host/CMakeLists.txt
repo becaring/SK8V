@@ -34,6 +34,7 @@ add_library(SkateVLegacy SHARED
   src/board_native.cpp
   src/board_parts.cpp
   src/board_shop.cpp
+  src/injuries.cpp
   src/stall_sampler.cpp
   src/physics_level.cpp
   src/menu.cpp
