@@ -41,6 +41,9 @@ CameraFocus=Skater
 CinemaFilter=NG_filmic01
 FilmerFilter=NG_filmic06
 FilmFilterStrength=0.85
+; SkateRadio: the radio station skate mode tunes to, e.g. RADIO_19_USER (Self Radio: your User Music, such as
+;   Skate 3's soundtrack). Empty leaves the radio as it is.
+SkateRadio=
 DrawBoard=1
 ; Native Skate board: owned skeletal drawable, original texture/normal/specular inputs, GTA lighting and shadows.
 BoardNative=1
