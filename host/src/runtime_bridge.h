@@ -50,6 +50,13 @@ public:
     bool SetBailLimit(float seconds);
     bool SetAirLimit(float seconds);
     bool SetLipRule(bool enabled);
+    // Keyboard and mouse (optional exports): false when the runtime has none.
+    bool KeyboardConfigure(const std::string& utf8KeysFile, std::uint32_t& problems);
+    bool KeyboardPad(float mouseX, float mouseY, float dt, bool active, SvPad& out);
+    std::string KeyboardKey(const char* action);     // the key bound, "" when none
+    bool KeyboardBind(const char* action, int vk);    // rebinds and saves SkateVKeys.txt
+    bool KeyboardLayout(const char* name);            // "standard" or "skate": every key at once
+    std::string KeyboardHints(bool onFoot); // "key\twhat" lines; empty without the export
     bool SetDifficulty(int index);
     bool SetCameraType(int type);  // 0 Low, 1 High
     bool SetGestures(const int (&up_down_left_right)[4]);  // catalog indices; all < 0: off
@@ -95,6 +102,12 @@ private:
     SvSetBailLimitFn setBailLimit_ = nullptr;
     SvSetAirLimitFn setAirLimit_ = nullptr;
     SvSetLipRuleFn setLipRule_ = nullptr;
+    SvKeyboardConfigureFn keyboardConfigure_ = nullptr;
+    SvKeyboardPadFn keyboardPad_ = nullptr;
+    SvKeyboardHintsFn keyboardHints_ = nullptr;
+    SvKeyboardKeyFn keyboardKey_ = nullptr;
+    SvKeyboardLayoutFn keyboardLayout_ = nullptr;
+    SvKeyboardBindFn keyboardBind_ = nullptr;
     SvSetDifficultyFn setDifficulty_ = nullptr;
     SvSetCameraTypeFn setCameraType_ = nullptr;
     SvSetGesturesFn setGestures_ = nullptr;

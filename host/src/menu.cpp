@@ -145,7 +145,10 @@ void Draw() {
             continue;
         }
         const Item& it = g_pages[g_pageIndex].items[static_cast<std::size_t>(i)];
-        std::string value = it.kind == Kind::Action ? "" : i == sel ? ShowSelected(it, g_cache[it.key]) : Show(it, g_cache[it.key]);
+        std::string value = it.kind == Kind::Action ? ""
+                            : it.kind == Kind::Key  ? (g_capturing && i == sel ? std::string("press a key (Esc: keep)") : it.show ? it.show() : "")
+                            : i == sel              ? ShowSelected(it, g_cache[it.key])
+                                                    : Show(it, g_cache[it.key]);
         if (it.kind == Kind::Chord && g_capturing && i == sel) value = ChordName(g_captureMask) + " ...";
         Row(x, y, it.label + (it.restart ? " *" : ""), value, i == sel);
     }
@@ -171,6 +174,30 @@ void Draw() {
 }
 
 void Capture(Item& it) {
+    if (it.kind == Kind::Key) {
+        // The next key that goes down (after the Enter that started this is up).
+        bool any = false;
+        int pressed = 0;
+        for (int vk = 0x08; vk <= 0xFE && !pressed; ++vk) {
+            if (vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON) continue;
+            if (GetAsyncKeyState(vk) & 0x8000) {
+                any = true;
+                if (g_captureArmed && vk != VK_SHIFT && vk != VK_CONTROL && vk != VK_MENU) pressed = vk;
+            }
+        }
+        if (!g_captureArmed) {
+            g_captureArmed = !any;
+            return;
+        }
+        if (pressed == VK_ESCAPE || GetTickCount64() - g_captureStart > kCaptureMs) {
+            g_capturing = false;
+        } else if (pressed) {
+            g_capturing = false;
+            if (it.bindKey) it.bindKey(pressed);
+            Beep("SELECT");
+        }
+        return;
+    }
     const unsigned pad = g_pad ? g_pad() & 0xF3FFu : 0;
     if (!g_captureArmed) {  // the press that started the capture is still down
         g_captureArmed = pad == 0;
@@ -214,7 +241,7 @@ void Navigate() {
             g_open = false;  // actions act on the game: give the controls back first
             if (it.run) it.run();
         }
-    } else if (it.kind == Kind::Chord) {
+    } else if (it.kind == Kind::Chord || it.kind == Kind::Key) {
         if (accept) g_capturing = true, g_captureArmed = false, g_captureMask = 0, g_captureStart = GetTickCount64();
     } else if (left || right || accept) {
         Commit(it, Step(it, g_cache[it.key], left ? -1 : 1));

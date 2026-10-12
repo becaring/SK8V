@@ -22,3 +22,5 @@ rustc-hash = "1.1"
 png = "0.17"
 # Skate 3 AEMS audio port (docs/AEMS.md); the live engine renders dry voices.
 skate-aems = { path = "../skate-aems" }
+# Keyboard and mouse as a controller (skate-input: keys, trick stick, one-key tricks).
+skate_input = { path = "../skate-input" }

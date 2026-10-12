@@ -5,6 +5,7 @@
 //! Layout mirrors host/include/skatev_runtime.h; both sides assert sizes.
 
 pub mod coords;
+pub mod keyboard;
 pub mod board_pose;
 pub mod curbs;
 pub mod dynamic;
@@ -1077,6 +1078,97 @@ pub unsafe extern "C" fn sv_set_difficulty(rt: *mut c_void, index: u32) -> u32 {
         let Some(rt) = (unsafe { runtime(rt) }) else { return 0 };
         (index < 4 && rt.jobs.send(Job::Difficulty(index)).is_ok()) as u32
     })
+}
+
+/// Keyboard and mouse (`keyboard.rs`): loads the keys from `path_utf8`
+/// (written with the defaults when missing). Returns how many lines of the
+/// file could not be read (0: all fine).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_keyboard_configure(_rt: *mut c_void, path_utf8: *const c_char) -> u32 {
+    guard(0, || {
+        if path_utf8.is_null() {
+            return 0;
+        }
+        let path = unsafe { CStr::from_ptr(path_utf8) }.to_string_lossy().into_owned();
+        keyboard::configure(path.into()).len() as u32
+    })
+}
+
+/// Keyboard and mouse as a controller this frame: `mouse_x`/`mouse_y` are
+/// the frame's look input (right, down), `active` 0 releases every key (no
+/// focus, a menu). Fills `out` and returns 1 when a key is held or the stick
+/// moves, else 0 (`out` untouched).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_keyboard_pad(_rt: *mut c_void, mouse_x: f32, mouse_y: f32, dt: f32, active: u32, out: *mut SvPad) -> u32 {
+    guard(0, || {
+        if out.is_null() {
+            return 0;
+        }
+        let Some(p) = keyboard::pad([mouse_x, mouse_y], dt, active != 0) else { return 0 };
+        if !keyboard::is_active(&p) {
+            return 0;
+        }
+        let axis = |v: f32| (v.clamp(-1.0, 1.0) * 32767.0) as i16;
+        let out = unsafe { &mut *out };
+        out.connected = 1;
+        out.buttons = p.buttons;
+        out.left_trigger = p.triggers[0];
+        out.right_trigger = p.triggers[1];
+        out.left_x = axis(p.left[0]);
+        out.left_y = axis(p.left[1]);
+        out.right_x = axis(p.right[0]);
+        out.right_y = axis(p.right[1]);
+        1
+    })
+}
+
+/// The keyboard's controls for the HUD (UTF-8, NUL-terminated, into `buf`
+/// when `cap` is enough; returns the bytes needed): one "key	what" line per
+/// control, walking (`on_foot` nonzero) or riding.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_keyboard_hints(_rt: *mut c_void, on_foot: u32, buf: *mut u8, cap: u32) -> u32 {
+    guard(0, || {
+        let text = keyboard::hints(on_foot != 0);
+        let need = text.len() as u32 + 1;
+        if !buf.is_null() && cap >= need {
+            unsafe {
+                std::ptr::copy_nonoverlapping(text.as_ptr(), buf, text.len());
+                *buf.add(text.len()) = 0;
+            }
+        }
+        need
+    })
+}
+
+/// The key bound to Skate action `id` (UTF-8, SkateVKeys.txt's names), into
+/// `buf`; returns the bytes needed (NUL included).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_keyboard_key(_rt: *mut c_void, id: *const c_char, buf: *mut u8, cap: u32) -> u32 {
+    guard(0, || {
+        let text = keyboard::key_of(&unsafe { str_arg(id) });
+        let need = text.len() as u32 + 1;
+        if !buf.is_null() && cap >= need {
+            unsafe {
+                std::ptr::copy_nonoverlapping(text.as_ptr(), buf, text.len());
+                *buf.add(text.len()) = 0;
+            }
+        }
+        need
+    })
+}
+
+/// Replaces every key with a layout ("standard" or "skate") and saves
+/// SkateVKeys.txt. Returns 1 when done.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_keyboard_layout(_rt: *mut c_void, name: *const c_char) -> u32 {
+    guard(0, || keyboard::layout(&unsafe { str_arg(name) }).is_ok() as u32)
+}
+
+/// Binds Windows virtual key `vk` to Skate action `id` alone and saves
+/// SkateVKeys.txt. Returns 1 when bound.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_keyboard_bind(_rt: *mut c_void, id: *const c_char, vk: u32) -> u32 {
+    guard(0, || keyboard::bind(&unsafe { str_arg(id) }, vk).is_ok() as u32)
 }
 
 /// The SkateV ramp-lip rule (overlay patch 0033): nonzero (the default) lets

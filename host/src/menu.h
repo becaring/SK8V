@@ -18,7 +18,7 @@
 
 namespace menu {
 
-enum class Kind { Flag, Number, Choice, Chord, Action };
+enum class Kind { Flag, Number, Choice, Chord, Action, Key };
 
 struct Item {
     Kind kind = Kind::Action;
@@ -30,7 +30,17 @@ struct Item {
     bool allowOff = false;                           // Chord: 0 (off) is a valid value
     std::function<void(const std::string&)> apply;   // live effect of a new INI value
     std::function<void()> run;                       // Action
+    std::function<std::string()> show;               // Key: the key bound now
+    std::function<void(int)> bindKey;                // Key: rebind to this virtual key
 };
+
+// A keyboard key: Accept waits for the next key (Esc cancels) and hands its
+// virtual-key code to `bind`; `show` names the key bound now.
+inline Item Key(std::string label, std::function<std::string()> show, std::function<void(int)> bind) {
+    Item i;
+    i.kind = Kind::Key, i.label = std::move(label), i.show = std::move(show), i.bindKey = std::move(bind);
+    return i;
+}
 
 struct Page {
     std::string title;

@@ -56,6 +56,13 @@ bool RuntimeBridge::Load(const wchar_t* dllPath, const std::string& dataRoot, co
     sym(groundAt_, "sv_ground_at");
     sym(setPhysicsLevel_, "sv_set_physics_level");
     sym(playLine_, "sv_play_line");
+    // Optional: keyboard and mouse.
+    keyboardConfigure_ = reinterpret_cast<SvKeyboardConfigureFn>(GetProcAddress(module_, "sv_keyboard_configure"));
+    keyboardPad_ = reinterpret_cast<SvKeyboardPadFn>(GetProcAddress(module_, "sv_keyboard_pad"));
+    keyboardHints_ = reinterpret_cast<SvKeyboardHintsFn>(GetProcAddress(module_, "sv_keyboard_hints"));
+    keyboardKey_ = reinterpret_cast<SvKeyboardKeyFn>(GetProcAddress(module_, "sv_keyboard_key"));
+    keyboardLayout_ = reinterpret_cast<SvKeyboardLayoutFn>(GetProcAddress(module_, "sv_keyboard_layout"));
+    keyboardBind_ = reinterpret_cast<SvKeyboardBindFn>(GetProcAddress(module_, "sv_keyboard_bind"));
     if (!missing.empty()) {
         error = "SkateVRuntime.dll is missing required ABI exports: " + missing;
         return false;
@@ -206,6 +213,40 @@ bool RuntimeBridge::SetBailLimit(float seconds) {
 
 bool RuntimeBridge::SetAirLimit(float seconds) {
     return runtime_ && setAirLimit_(runtime_, seconds) != 0;
+}
+
+bool RuntimeBridge::KeyboardConfigure(const std::string& utf8KeysFile, std::uint32_t& problems) {
+    if (!runtime_ || !keyboardConfigure_) return false;
+    problems = keyboardConfigure_(runtime_, utf8KeysFile.c_str());
+    return true;
+}
+
+std::string RuntimeBridge::KeyboardKey(const char* action) {
+    if (!runtime_ || !keyboardKey_) return {};
+    char text[64]{};
+    keyboardKey_(runtime_, action, text, sizeof(text));
+    return text;
+}
+
+bool RuntimeBridge::KeyboardLayout(const char* name) {
+    return runtime_ && keyboardLayout_ && keyboardLayout_(runtime_, name) != 0;
+}
+
+bool RuntimeBridge::KeyboardBind(const char* action, int vk) {
+    return runtime_ && keyboardBind_ && keyboardBind_(runtime_, action, static_cast<std::uint32_t>(vk)) != 0;
+}
+
+std::string RuntimeBridge::KeyboardHints(bool onFoot) {
+    if (!runtime_ || !keyboardHints_) return {};
+    const std::uint32_t need = keyboardHints_(runtime_, onFoot ? 1u : 0u, nullptr, 0);
+    std::string text(need, '\0');
+    keyboardHints_(runtime_, onFoot ? 1u : 0u, text.data(), need);
+    text.resize(need ? need - 1 : 0);
+    return text;
+}
+
+bool RuntimeBridge::KeyboardPad(float mouseX, float mouseY, float dt, bool active, SvPad& out) {
+    return runtime_ && keyboardPad_ && keyboardPad_(runtime_, mouseX, mouseY, dt, active ? 1u : 0u, &out) != 0;
 }
 
 bool RuntimeBridge::SetLipRule(bool enabled) {

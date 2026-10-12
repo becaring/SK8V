@@ -50,6 +50,29 @@ python tools/prepare.py --skate "<Skate 3.iso or folder>" --gta "<GTA V folder>"
 | D-pad left/right, gun equipped | Change weapon |
 | Double-tap `X` on foot near a grabbable wall | GTA mantle, then return to Skate |
 
+### Keyboard and mouse
+
+Without a controller, the keyboard and mouse play Skate. The keys are in `SkateVKeys.txt` beside the game (written with these defaults on first start; rebind any action there, `Keyboard=0` in `SkateVLegacy.ini` turns it off):
+
+| Key | Skate |
+|---|---|
+| `W` `A` `S` `D` | Left stick (steer, walk) |
+| `Shift` | Push (A) |
+| `Space` | Pop: hold to crouch, let go to ollie |
+| Arrow keys / numpad | Trick stick: type the motion (kickflip: down, then up-left) |
+| `E` / hold `E` | Mount or dismount / put the board away (Y) |
+| `F` | On foot (no vehicle within 3.5 m): board out and skate. Skating: back to GTA in one press (steps off first) |
+| `B` (hold, behind a moving car) | Skitch: hold on to the car (Skate's RB) |
+| `Tab` / mouse buttons | Gun out or away (hold `Tab`: GTA's weapon wheel); with a gun out the right mouse button aims and the left one shoots |
+| `F10` or `/` | SK8V's menu (every setting; `/` is the US layout's key) |
+| `,` / `.` | Radio: previous / next station |
+| `N` / hold `J` | Set a session marker / back to it |
+| `M` | GTA's interaction menu, also while skating |
+
+Every key can be changed in SK8V's menu (F10), page Keyboard keys: Enter, then the new key. The page also switches the whole layout: GTAxSkate's standard (above) or Skate's controller positions (I J K L as the trick stick, Space push; no numpad needed). While you skate on the keyboard, your keys are listed down the left side of the screen (`KeyboardHints=0` or the menu's Controller and HUD page hides them).
+| `Q` | Hippie jump |
+| `T` / `Ctrl` | X / B |
+
 Swimming switches to GTA automatically and returns to Skate afterward. **Hall of Meat is on by default** and can be disabled in the SK8V menu, alongside other gameplay settings.
 
 ### Unable to save settings in the menu?

@@ -2719,6 +2719,10 @@ name = "skate-xma"
 version = "0.1.0"
 
 [[package]]
+name = "skate_input"
+version = "0.1.0"
+
+[[package]]
 name = "skatev-ped-export"
 version = "0.1.0"
 dependencies = [
@@ -2744,6 +2748,7 @@ dependencies = [
  "skate-core",
  "skate-host",
  "skate-hud",
+ "skate_input",
  "svwc",
 ]
 

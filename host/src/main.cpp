@@ -60,6 +60,8 @@ struct Config {
     std::string worldCache;
     float pedZOffset = 1.0f;  // ped origin above Skate's ground contact
     float fovScale = 1.0f;
+    bool keyboard = true;     // Keyboard: keyboard and mouse as a controller when none is connected (SkateVKeys.txt)
+    bool keyboardHints = true; // KeyboardHints: the keys down the left side while skating on the keyboard
     bool drawBoard = true;    // DrawBoard: the native board object (and its mesh fallback)
     bool showDebug = false;   // ShowDebug=1: old debug text HUD (the original Skate HUD is hud_overlay)
     bool verboseLog = false;  // VerboseLog=1: periodic runtime log lines (perf, skater trace, collision streaming)
@@ -68,6 +70,7 @@ struct Config {
     bool carryBoard = false;  // CarryBoard (SkateMods): the board picked in the wheel stays in hand; E/F get on (off: SK8V's way)
     bool liveClip = false;    // LiveClip=1: live_clip.h (Skate's pose also through GTA's anim, the owned clip)
     bool stallSampler = false; // StallSampler=1: stall_sampler.h (stack samples of stalled script frames)
+    bool showInputs = false;   // ShowInputs=1: the keys held and the controller Skate gets, at the bottom (testing)
     // Shooting on the board, GTA drive-by layout: GunButton (XInput mask,
     // default Back, on release without LB) takes a gun out or puts it away.
     // Gun out: hold AimButton (LB) to aim, FireButton (RB) fires, right stick
@@ -228,6 +231,8 @@ const Key kKeys[] = {
     {"WorldCache", Store<&Config::worldCache>},
     {"PedZOffset", Store<&Config::pedZOffset>},
     {"CameraFovScale", Store<&Config::fovScale>},
+    {"Keyboard", Store<&Config::keyboard>},
+    {"KeyboardHints", Store<&Config::keyboardHints>},
     {"DrawBoard", Store<&Config::drawBoard>},
     {"ShowDebug", Store<&Config::showDebug>},
     {"VerboseLog", Store<&Config::verboseLog>},
@@ -238,6 +243,7 @@ const Key kKeys[] = {
     {"SwimDepth", Store<&Config::swimDepth>},
     {"LiveClip", Store<&Config::liveClip>},
     {"StallSampler", Store<&Config::stallSampler>},
+    {"ShowInputs", Store<&Config::showInputs>},
     {"BoardAim", Store<&Config::boardAim>},
     {"RadioControls", Store<&Config::radioControls>},
     {"TrickAnalyzer", Store<&Config::trickAnalyzer>},
@@ -345,7 +351,8 @@ std::atomic<bool> g_lineRequested{false};
 std::atomic<bool> g_lineNext{false};  // next line in Line='s ';' list
 
 void Keyboard(DWORD key, WORD, BYTE, BOOL, BOOL, BOOL wasDownBefore, BOOL isUpNow) {
-    if (key == VK_OEM_2 && !wasDownBefore && !isUpNow) g_menuToggle.store(true);
+    // F10 too: '/' is VK_OEM_2 only on a US layout (Shift+7 on a German one).
+    if ((key == VK_OEM_2 || key == VK_F10) && !wasDownBefore && !isUpNow) g_menuToggle.store(true);
 }
 
 // ---- GTA presentation ------------------------------------------------------
@@ -454,6 +461,44 @@ XInputGetStateFn PadGetState() {
     return fn;
 }
 
+// Keyboard and mouse: on when the runtime has them and the INI allows it.
+bool g_keyboard = false;
+bool g_boardArmed = false; // a gun out on the board: the mouse buttons aim and shoot
+// The controller is what the player uses now (the keyboard and mouse were not
+// touched since it was): the keys on screen hide, M and F stay the pad's.
+bool g_controller = false;
+// F went down this frame on the keyboard (read once per frame in ReadPadRaw,
+// so the press that gets on is not also the one that gets off).
+bool g_fPressed = false;
+std::string g_keyHints[2]; // riding, walking ("key\twhat" lines)
+
+// Whether GTA's window has the keyboard (keys pressed elsewhere are not skating).
+bool GameFocused() {
+    DWORD process = 0;
+    const HWND window = GetForegroundWindow();
+    if (window) GetWindowThreadProcessId(window, &process);
+    return window && process == GetCurrentProcessId();
+}
+
+// The keyboard's keys down the left side (x 0.012 from y 0.25), as the
+// controls the player bound in SkateVKeys.txt, plus F back to GTA.
+void DrawKeyboardHints(bool onFoot) {
+    std::string& text = g_keyHints[onFoot ? 1 : 0];
+    if (text.empty()) text = g_runtime.KeyboardHints(onFoot) + "F\tBack to GTA\nTab\tGun out / away (hold: weapon wheel)\nMouse buttons\tAim / shoot (gun out)\nF10\tSK8V menu (all settings)\n";
+    float y = 0.25f;
+    std::size_t at = 0;
+    while (at < text.size()) {
+        const std::size_t end = text.find('\n', at);
+        const std::string line = text.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        at = end == std::string::npos ? text.size() : end + 1;
+        const std::size_t tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        const std::string shown = "[" + line.substr(0, tab) + "] " + line.substr(tab + 1);
+        gta::Text(shown.c_str(), 0.012f, y, 0.26f, 255, 255, 255, 200);
+        y += 0.021f;
+    }
+}
+
 SvPad ReadPadRaw() {
     // Polled every frame in and out of skate mode (board action). XInput is
     // slow on empty slots, so connected slots are read each frame and the
@@ -497,18 +542,93 @@ SvPad ReadPadRaw() {
         else Logf("SkateV Legacy: no controller connected");
         s_active = active, s_ps = havePs ? ps : nullptr;
     }
-    if (active == XUSER_MAX_COUNT) return pad;
-    const XINPUT_GAMEPAD& g = st[active].Gamepad;
-    pad.connected = 1;
-    pad.packet = st[active].dwPacketNumber;
-    pad.buttons = g.wButtons;
-    pad.left_trigger = g.bLeftTrigger;
-    pad.right_trigger = g.bRightTrigger;
-    pad.left_x = g.sThumbLX;
-    pad.left_y = g.sThumbLY;
-    pad.right_x = g.sThumbRX;
-    pad.right_y = g.sThumbRY;
+    if (active < XUSER_MAX_COUNT) {
+        const XINPUT_GAMEPAD& g = st[active].Gamepad;
+        pad.connected = 1;
+        pad.packet = st[active].dwPacketNumber;
+        pad.buttons = g.wButtons;
+        pad.left_trigger = g.bLeftTrigger;
+        pad.right_trigger = g.bRightTrigger;
+        pad.left_x = g.sThumbLX;
+        pad.left_y = g.sThumbLY;
+        pad.right_x = g.sThumbRX;
+        pad.right_y = g.sThumbRY;
+    }
+    // The keyboard and mouse (SkateVKeys.txt) play alongside: whichever was
+    // used last wins, so an idle or virtual controller (Steam Input,
+    // DS4Windows, a wheel) never shuts the keyboard out. GTA's look input
+    // carries the mouse; the settings menu releases the keys.
+    static bool s_fWas = false;
+    const bool fDown = (GetAsyncKeyState('F') & 0x8000) != 0;
+    g_fPressed = fDown && !s_fWas && GameFocused();
+    s_fWas = fDown;
+    static bool s_keyboardInUse = true;
+    const auto moved = [](int v) { return v > 7849 || v < -7849; };  // XInput's thumb dead zone
+    const bool padUsed = pad.connected && (pad.buttons || pad.left_trigger > 30 || pad.right_trigger > 30 ||
+                                           moved(pad.left_x) || moved(pad.left_y) || moved(pad.right_x) || moved(pad.right_y));
+    if (g_keyboard) {
+        static DWORD s_last = now;
+        const float dt = static_cast<float>(now - s_last) / 1000.0f;
+        s_last = now;
+        static DWORD s_packet = 0;
+        SvPad keys{};
+        const float mx = Call<float>(gta::GET_DISABLED_CONTROL_NORMAL, 0, 1);
+        const float my = Call<float>(gta::GET_DISABLED_CONTROL_NORMAL, 0, 2);
+        bool typed = g_runtime.KeyboardPad(mx, my, dt, GameFocused() && !menu::IsOpen(), keys);
+        // GTA's own weapon keys on the board: Tab is the gun button (tap: gun
+        // out or away, hold: GTA's weapon wheel), and with a gun out the
+        // right mouse button aims and the left one shoots (SK8V's drive-by
+        // layout on a controller: Back, LB, RB).
+        if (GameFocused() && !menu::IsOpen()) {
+            const auto held = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
+            if (held(VK_TAB)) keys.buttons |= g_config.gunButton, typed = true;
+            if (g_boardArmed && held(VK_RBUTTON)) keys.buttons |= g_config.aimButton, typed = true;
+            if (g_boardArmed && held(VK_LBUTTON)) keys.buttons |= g_config.fireButton, typed = true;
+        }
+        const bool was = s_keyboardInUse;
+        if (padUsed) s_keyboardInUse = false;
+        else if (typed) s_keyboardInUse = true;
+        if (was != s_keyboardInUse) Logf("SkateV Legacy: input: %s", s_keyboardInUse ? "keyboard and mouse" : "controller");
+        if (typed && !padUsed) {
+            g_controller = false;
+            keys.packet = ++s_packet;
+            return keys;
+        }
+    }
+    g_controller = pad.connected && !(g_keyboard && s_keyboardInUse);
     return pad;
+}
+
+// ShowInputs: the keys held on the keyboard and the controller frame Skate
+// gets this frame, at the bottom of the screen, so a recording shows what
+// was pressed and how the game answered.
+void DrawInputs(const SvPad& pad) {
+    std::string keys;
+    char name[32];
+    for (int vk = 0x08; vk <= 0xFE; ++vk) {
+        if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU) continue; // their left/right keys say it
+        if (!(GetAsyncKeyState(vk) & 0x8000)) continue;
+        const char* n = vk == VK_LBUTTON ? "LMB" : vk == VK_RBUTTON ? "RMB" : vk == VK_MBUTTON ? "MMB" : nullptr;
+        if (!n) {
+            LONG scan = static_cast<LONG>(MapVirtualKeyA(static_cast<UINT>(vk), MAPVK_VK_TO_VSC)) << 16;
+            if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN || vk == VK_RCONTROL || vk == VK_RMENU)
+                scan |= 1 << 24; // extended keys (arrows, right Ctrl/Alt) named as such
+            if (!GetKeyNameTextA(scan, name, sizeof(name))) std::snprintf(name, sizeof(name), "0x%02X", vk);
+            n = name;
+        }
+        keys += keys.empty() ? "" : " ";
+        keys += n;
+    }
+    static const char* const kButtons[16] = {"Up", "Down", "Left", "Right", "Start", "Back", "LS", "RS",
+                                              "LB", "RB", "", "", "A", "B", "X", "Y"};
+    std::string buttons;
+    for (int b = 0; b < 16; ++b)
+        if ((pad.buttons >> b & 1) && *kButtons[b]) buttons += std::string(buttons.empty() ? "" : " ") + kButtons[b];
+    char line[512];
+    std::snprintf(line, sizeof(line), "keys: %s   |   pad: L %+.2f %+.2f  R %+.2f %+.2f  LT %d RT %d  %s",
+                  keys.empty() ? "-" : keys.c_str(), pad.left_x / 32767.0f, pad.left_y / 32767.0f, pad.right_x / 32767.0f,
+                  pad.right_y / 32767.0f, pad.left_trigger, pad.right_trigger, buttons.c_str());
+    Text(line, 0.5f, 0.955f, 0.32f, 255, 255, 255, true);
 }
 
 // Skate and the lifecycle see a neutral pad while the settings menu is open.
@@ -730,6 +850,7 @@ struct Session {
     DWORD watchSince = 0;         // ... since (wall time)
     int watchFrames = 0;          // ... script frames since (a pause stops these)
     DWORD yHeldSince = 0;         // Y pressed while skating (hold to put the board away)
+    DWORD keyLeaveUntil = 0;      // keyboard F: Y held for the put-away time
     bool yWasDown = true;
     bool trackingStarted = false; // preserves opt-out until the first board action
     // GTA ped state saved on entry and restored on leaving.
@@ -1201,9 +1322,9 @@ void TryEnter(Session& s, const Config& cfg, bool strict) {
             return;
         }
     }
-    // Skate reads only the controller (no keyboard): without one the player
-    // would be held with nothing to move them.
-    if (!ReadPadRaw().connected) {
+    // Skate reads a controller, or the keyboard when it is on (SkateVKeys.txt):
+    // with neither the player would be held with nothing to move them.
+    if (!ReadPadRaw().connected && !g_keyboard) {
         static bool logged = false;
         if (!logged) {
             logged = true;
@@ -1416,6 +1537,7 @@ void DisableSkateControls(std::uint16_t buttons, bool aiming) {
         skip[c] = (g_weaponWheel && ((c >= 12 && c <= 17) || c == 37 || c == 1 || c == 2)) ||
                   c == 199 || c == 200 || c == 170 || c == 288 || c == 289 || (c >= 296 && c <= 328) || c == 349 ||
                   (c == 19 && !(buttons & 0x0100)) ||
+                  (c == 244 && g_keyboard && !g_controller) || // keyboard and mouse: M stays GTA's interaction menu
                   (aiming && (c == 1 || c == 2 || c == 24 || c == 25 || c == 45 || (c >= 270 && c <= 273) || (c >= 290 && c <= 295)));
         if (skip[c]) continue;
         // GTA's value this frame whether or not it is disabled (scripts run after the input update).
@@ -1757,6 +1879,7 @@ void BoardControls(Session& s, const Config& cfg, SvPad& pad) {
         s.gunChordUsed = false;
     }
 
+    g_boardArmed = s.armed;
     if (!s.armed) return;
 
     const std::string_view state(s.last.state_utf8);
@@ -2381,6 +2504,18 @@ void LifecycleFrame(Session& s, const Config& cfg, bool f6) {
         s_yWas = yHeld;
         if (yBoard) Log("SkateV Legacy: Y with the board in hand");
         if (f6 || wheel || yBoard) TryEnter(s, cfg, !f6);
+        // Keyboard: F on foot with no vehicle within 3.5 m gets on, as the weapon
+        // wheel does (near a vehicle F stays GTA's enter).
+        bool keyF = false;
+        if (g_fPressed && g_keyboard && !g_controller && !menu::IsOpen() && Call<BOOL>(gta::IS_PED_ON_FOOT, player)) {
+            const Vector3 at = Call<Vector3>(gta::GET_ENTITY_COORDS, player, 1);
+            if (!Call<BOOL>(gta::IS_ANY_VEHICLE_NEAR_POINT, at.x, at.y, at.z, 3.5f)) {
+                Call<void>(gta::DISABLE_CONTROL_ACTION, 0, 23, 1); // INPUT_ENTER
+                keyF = true;
+                Log("SkateV Legacy: F on the keyboard: board out");
+            }
+        }
+        if (f6 || wheel || keyF) TryEnter(s, cfg, !f6);
         // Refused (vehicle, water, ...): no invisible weapon left in hand.
         if (wheel && s.state == LifeState::Ready) Call<void>(gta::SET_CURRENT_PED_WEAPON, player, 0xA2719263, 1);
         break;
@@ -2451,7 +2586,21 @@ void LifecycleFrame(Session& s, const Config& cfg, bool f6) {
         break;
     }
     case LifeState::Skating: {
-        const SvPad pad = ReadPad(); // once per frame
+        SvPad pad = ReadPad(); // once per frame
+        if (cfg.showInputs) DrawInputs(pad);
+        // Keyboard: F puts the board away in one press, as Y held does: Skate
+        // steps off first, then the board goes away. Read from the key itself
+        // (GTA's enter/exit is the pad's Y, whose tap mounts and dismounts).
+        // On foot (board in hand) F leaves at once: Y would mount the board first.
+        if (g_fPressed && g_keyboard && !g_controller && !menu::IsOpen() &&
+            std::string_view(s.last.state_utf8).rfind("Biped", 0) == 0) {
+            Leave(s, cfg, "F on foot", true);
+            break;
+        }
+        if (g_fPressed && g_keyboard && !g_controller && !menu::IsOpen())
+            s.keyLeaveUntil = now + cfg.putAwayHoldMs + 150;
+        if (s.keyLeaveUntil && now < s.keyLeaveUntil) pad.buttons |= 0x8000;
+        else s.keyLeaveUntil = 0;
         // Hold Y to put the board away. The press still reaches Skate, so
         // it steps off first, then puts the board away while Y stays down.
         // Only a press made while skating counts; a Y held at entry does not.
@@ -2671,6 +2820,34 @@ std::vector<menu::Page> MenuPages(Session& s) {
         Choice("Output", "AudioOutput", {"Gta", "Off"}, {"GTA mixer", "Off"}, {}, true),
     }});
 
+    // Keyboard keys (contributed by GTAxSkate): Enter, then the new key; saved to SkateVKeys.txt.
+    {
+        menu::Page keys{"Keyboard keys", {}};
+        // The whole layout first: GTAxSkate's (GTA-like) or like a controller in Skate 3.
+        keys.items.push_back(menu::Choice("Layout", "KeyLayout", {"standard", "skate"},
+                                          {"GTAxSkate standard (GTA-like)", "Skate (I J K L trick stick, U O diagonals)"},
+                                          [](const std::string& v) {
+                                              if (g_runtime.KeyboardLayout(v.c_str())) g_keyHints[0].clear(), g_keyHints[1].clear();
+                                          }));
+        const std::pair<const char*, const char*> actions[] = {
+            {"lean_forward", "Lean forward / walk"}, {"lean_back", "Lean back"}, {"steer_left", "Steer left"},
+            {"steer_right", "Steer right"}, {"a", "Push"}, {"pop", "Ollie (hold, let go)"}, {"trick_up", "Trick stick up"},
+            {"trick_down", "Trick stick down"}, {"trick_left", "Trick stick left"}, {"trick_right", "Trick stick right"},
+            {"manual", "Manual"}, {"nose_manual", "Nose manual"}, {"lt", "Left grab"}, {"rt", "Right grab"},
+            {"hippie", "Hippie jump"}, {"y", "Get on / off (hold: put away)"}, {"x", "X"}, {"b", "B"},
+            {"retry", "Radio: previous"}, {"object_dropper", "Radio: next"}, {"marker_place", "Set a marker"},
+            {"marker_return", "Back to the marker (hold)"}};
+        for (const auto& [id, label] : actions) {
+            const std::string action = id;
+            keys.items.push_back(menu::Key(
+                label, [action] { const std::string k = g_runtime.KeyboardKey(action.c_str()); return k.empty() ? std::string("-") : k; },
+                [action](int vk) {
+                    if (g_runtime.KeyboardBind(action.c_str(), vk)) g_keyHints[0].clear(), g_keyHints[1].clear();
+                }));
+        }
+        pages.push_back(std::move(keys));
+    }
+
     pages.push_back({"Controller and HUD", {
         Chord("Open menu (with /)", "MenuButton", D.life.menuButton, true, Bound("MenuButton")),
         Chord("Gun out / away", "GunButton", D.gunButton, false, Bound("GunButton")),
@@ -2679,12 +2856,15 @@ std::vector<menu::Page> MenuPages(Session& s) {
         Chord("BackwardsMan", "BackwardsManChord", D.backwardsManChord, false, Bound("BackwardsManChord", ApplyQuirk)),
         Flag("Skate during missions", "BoardActionInMissions", D.life.inMissions, Bound("BoardActionInMissions")),
         Flag("Radio on LB + d-pad", "RadioControls", D.radioControls, Bound("RadioControls")),
+        Flag("Keyboard and mouse", "Keyboard", D.keyboard, {}, true),
+        Flag("Keyboard keys on screen", "KeyboardHints", D.keyboardHints, Bound("KeyboardHints")),
         Flag("Original Skate HUD", "Hud", true, {}, true),
         Flag("Trick Analyzer", "TrickAnalyzer", D.trickAnalyzer,
              Bound("TrickAnalyzer", [] { hudoverlay::SetTrickAnalyzer(g_config.trickAnalyzer); })),
     }});
 
     pages.push_back({"Dev", {
+        Choice("Show inputs on screen (keys and pad)", "ShowInputs", {"0", "1"}, {"Off", "On"}, Bound("ShowInputs")),
         Action("Play showcase line", [] { g_lineRequested.store(true); }),
         Action("Next showcase line", [] { g_lineNext.store(true); }),
         Action("Sound list overlay", [] { g_soundListToggle.store(true); }),
@@ -2758,6 +2938,13 @@ void ScriptMain() {
     } else {
         Logf("SkateV Legacy: runtime ABI %u loaded (host ABI %u); data '%s' cache '%s'", g_runtime.ApiVersion(),
              SKATEV_ABI_VERSION, cfg.dataRoot.c_str(), cfg.worldCache.c_str());
+        if (cfg.keyboard) {
+            std::uint32_t problems = 0;
+            const std::string keys = util::Narrow(g_gameDir + L"SkateVKeys.txt");
+            g_keyboard = g_runtime.KeyboardConfigure(keys, problems);
+            g_keyHints[0].clear(), g_keyHints[1].clear();
+            if (g_keyboard) Logf("SkateV Legacy: keyboard and mouse on (%s, %u unreadable line(s))", keys.c_str(), problems);
+        }
         Logf("SkateV Legacy: %zu exact prop and vehicle collision templates", DynamicWorld::LoadPropTemplates(cfg.worldCache));
         Logf("SkateV Legacy: %zu script-toggled map states with collision", mapstates::Load(cfg.worldCache));
         ApplyQuirk();
@@ -2894,6 +3081,8 @@ void ScriptMain() {
         Lap(kPartRecords);
         gtaaudio::Tick(s.state == LifeState::Skating);
         Lap(kPartAudio);
+        if (s.state == LifeState::Skating && g_keyboard && !g_controller && g_config.keyboardHints && !menu::IsOpen())
+            DrawKeyboardHints(std::string_view(s.last.state_utf8).rfind("Biped", 0) == 0);
         physlevel::Tick();
         Lap(kPartLevel);
         monitor.Work(monitor.Now() - workStart);

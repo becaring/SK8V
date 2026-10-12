@@ -1,0 +1,9 @@
+[package]
+name = "skate_input"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Skate 3 on keyboard and mouse: keys, a fighting-game style trick stick and one-key tricks, translated into the controller Skate's flick-it input expects."
+
+[dependencies]

@@ -13,6 +13,12 @@ Snow=0
 RadioControls=1
 ; TrickAnalyzer: 1 = Skate 3's Trick Analyzer shows each trick's stick gesture (bottom centre); 0 = off.
 TrickAnalyzer=1
+; Keyboard: without a controller, the keyboard and mouse play Skate (keys in SkateVKeys.txt
+;   beside this file, written with the defaults: WASD move, Shift push, Space pop, arrows trick
+;   stick, E board, Q hippie jump). 0 turns it off.
+Keyboard=1
+; KeyboardHints: while skating on the keyboard, its keys down the left side of the screen. 0 hides them.
+KeyboardHints=1
 DrawBoard=1
 ; Native Skate board: owned skeletal drawable, original texture/normal/specular inputs, GTA lighting and shadows.
 BoardNative=1
