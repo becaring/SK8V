@@ -266,6 +266,16 @@ void Toggle() {
     g_open = true;
 }
 
+void OpenPage(const std::string& title) {
+    if (g_open || g_pages.empty()) return Toggle();
+    for (std::size_t i = 0; i < g_pages.size(); ++i)
+        if (g_pages[i].title == title) {
+            Toggle();
+            if (g_open) g_pageIndex = static_cast<int>(i), g_level = 1;
+            return;
+        }
+}
+
 bool IsOpen() { return g_open; }
 
 void Tick() {

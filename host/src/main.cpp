@@ -30,6 +30,7 @@
 #include "thread_census.h"
 #include "menu.h"
 #include "ps_pad.h"
+#include "skate_map.h"
 #include "map_states.h"
 #include "pack_loader.h"
 #include "pose_hook.h"
@@ -62,6 +63,8 @@ struct Config {
     float fovScale = 1.0f;
     bool keyboard = true;     // Keyboard: keyboard and mouse as a controller when none is connected (SkateVKeys.txt)
     bool keyboardHints = true; // KeyboardHints: the keys down the left side while skating on the keyboard
+    bool gpsWhileSkating = true; // GpsWhileSkating: GTA's route to the waypoint stays on in Skate mode
+    bool skateSpots = true;      // SkateSpots: GTA's skate parks as blips on the map
     bool drawBoard = true;    // DrawBoard: the native board object (and its mesh fallback)
     bool showDebug = false;   // ShowDebug=1: old debug text HUD (the original Skate HUD is hud_overlay)
     bool verboseLog = false;  // VerboseLog=1: periodic runtime log lines (perf, skater trace, collision streaming)
@@ -233,6 +236,8 @@ const Key kKeys[] = {
     {"CameraFovScale", Store<&Config::fovScale>},
     {"Keyboard", Store<&Config::keyboard>},
     {"KeyboardHints", Store<&Config::keyboardHints>},
+    {"GpsWhileSkating", Store<&Config::gpsWhileSkating>},
+    {"SkateSpots", Store<&Config::skateSpots>},
     {"DrawBoard", Store<&Config::drawBoard>},
     {"ShowDebug", Store<&Config::showDebug>},
     {"VerboseLog", Store<&Config::verboseLog>},
@@ -341,6 +346,7 @@ Config LoadConfig() {
 }
 
 Config g_config;
+const char* g_routeNotice = nullptr; // the Interaction page's last GPS change, shown once
 
 // '/' opens the settings menu (menu.h). Everything else that used a hotkey is a
 // menu item; the items that act on a frame of the main loop set these flags.
@@ -2863,6 +2869,13 @@ std::vector<menu::Page> MenuPages(Session& s) {
              Bound("TrickAnalyzer", [] { hudoverlay::SetTrickAnalyzer(g_config.trickAnalyzer); })),
     }});
 
+    // GTAxSkate's interaction page (M on the keyboard): GPS destinations.
+    pages.push_back({"Interaction", {
+        Action("GPS: nearest clothing store (boards)", [] { g_routeNotice = skatemap::RouteToClothingStore(); }),
+        Action("GPS: nearest skate spot", [] { g_routeNotice = skatemap::RouteToSkateSpot(); }),
+        Action("GPS: remove the waypoint", [] { g_routeNotice = skatemap::ClearRoute(); }),
+    }});
+
     pages.push_back({"Dev", {
         Choice("Show inputs on screen (keys and pad)", "ShowInputs", {"0", "1"}, {"Off", "On"}, Bound("ShowInputs")),
         Action("Play showcase line", [] { g_lineRequested.store(true); }),
@@ -3074,6 +3087,7 @@ void ScriptMain() {
             else menu::Toggle();
         }
         menu::Tick();
+        if (g_routeNotice) Notify(s, g_routeNotice, 3000), g_routeNotice = nullptr;
         Lap(kPartMenu);
         recordsui::Tick(s.state == LifeState::Skating,
                         g_hallOfMeatOn && std::string_view(s.last.state_utf8).rfind("Wipeout", 0) == 0);
@@ -3083,6 +3097,41 @@ void ScriptMain() {
         Lap(kPartAudio);
         if (s.state == LifeState::Skating && g_keyboard && !g_controller && g_config.keyboardHints && !menu::IsOpen())
             DrawKeyboardHints(std::string_view(s.last.state_utf8).rfind("Biped", 0) == 0);
+        skatemap::Tick(SkateOwnsPlayer(s), g_config.gpsWhileSkating, g_config.skateSpots);
+        // M while skating: GTA's own interaction menu. It did not open because
+        // Skate holds the player frozen (IS_ENTITY_STATIC; control, on foot,
+        // in air all as on foot): while M is down and briefly after, the
+        // player is not frozen (gravity and collision stay off, so nothing
+        // moves). Whether GTA's menu script runs is logged.
+        {
+            static ULONGLONG s_thawUntil = 0, s_checkAt = 0;
+            const ULONGLONG now64 = GetTickCount64();
+            const bool mDown = s.state == LifeState::Skating && Call<BOOL>(gta::IS_USING_KEYBOARD_AND_MOUSE, 0) &&
+                               !gta::FrontendActive() && !menu::IsOpen() && Call<BOOL>(gta::IS_DISABLED_CONTROL_PRESSED, 0, 244);
+            static ULONGLONG s_menuUntil = 0;
+            static int s_before = -1;
+            const int menus = Call<int>(gta::GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_HASH, util::Joaat("pi_menu"));
+            if (mDown) {
+                if (!s_thawUntil || now64 >= s_thawUntil) s_checkAt = now64 + 600, s_before = menus;
+                s_thawUntil = now64 + 400;
+                s_menuUntil = now64 + 30000;
+            }
+            // GTA's menu checks the player each frame: unfrozen while it runs
+            // (it started from this press), at most 30 s.
+            if (s_before == 0 && menus > 0 && now64 < s_menuUntil) s_thawUntil = std::max(s_thawUntil, now64 + 100);
+            if (s.state == LifeState::Skating && s_thawUntil) {
+                const bool thaw = now64 < s_thawUntil;
+                Call<void>(gta::FREEZE_ENTITY_POSITION, s.ped, thaw ? 0 : 1);
+                if (thaw) Call<void>(gta::SET_ENTITY_VELOCITY, s.ped, 0.0f, 0.0f, 0.0f);
+                else s_thawUntil = 0;
+            } else {
+                s_thawUntil = 0;
+            }
+            if (s_checkAt && now64 >= s_checkAt) {
+                s_checkAt = 0;
+                Logf("SkateV Legacy: M while skating: GTA's menu script pi_menu threads %d (before the press %d)", menus, s_before);
+            }
+        }
         physlevel::Tick();
         Lap(kPartLevel);
         monitor.Work(monitor.Now() - workStart);

@@ -194,6 +194,8 @@ void Start(const std::wstring& ini, std::vector<Page> pages, std::function<unsig
 // The '/' key: opens the menu, closes it when open (the closing frame still
 // keeps the game's controls, so the key press does not reach GTA).
 void Toggle();
+// Opens the menu straight on the page titled `title` (closes it when open).
+void OpenPage(const std::string& title);
 bool IsOpen();
 // Script thread, once per frame: draws and handles navigation while open.
 void Tick();

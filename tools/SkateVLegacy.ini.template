@@ -19,6 +19,10 @@ TrickAnalyzer=1
 Keyboard=1
 ; KeyboardHints: while skating on the keyboard, its keys down the left side of the screen. 0 hides them.
 KeyboardHints=1
+; GpsWhileSkating: GTA's GPS route to the waypoint stays on while skating (as in a vehicle). 0 turns it off.
+GpsWhileSkating=1
+; SkateSpots: GTA's skate parks (Vespucci Beach, Hawick, Little Seoul, Strawberry, La Mesa) as map blips. 0 turns it off.
+SkateSpots=1
 DrawBoard=1
 ; Native Skate board: owned skeletal drawable, original texture/normal/specular inputs, GTA lighting and shadows.
 BoardNative=1
