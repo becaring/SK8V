@@ -63,6 +63,8 @@ public:
     bool SetPosture(int profile);                // 0 none, 1 stiff, 2 slouch, 3 buff
     bool SetRidingStyle(int style);              // 0 none, 1 Loose, 2 Gonzo, 3 Aggressive
     bool SetEquipment(float truck, float wheel); // 0..1 each
+    bool SetTrainer(const float (&tuning)[11], bool holdFakie); // false: runtime has none
+    bool SetHippieJump(float scale); // false: runtime has none
     bool SetVerboseLog(bool enabled);
     bool SetSkitchStandoff(float metres);
     int SkitchVehicle() const;
@@ -114,6 +116,8 @@ private:
     SvSetPostureFn setPosture_ = nullptr;
     SvSetRidingStyleFn setRidingStyle_ = nullptr;
     SvSetEquipmentFn setEquipment_ = nullptr;
+    SvSetTrainerFn setTrainer_ = nullptr;
+    SvSetHippieJumpFn setHippieJump_ = nullptr;
     SvSetVerboseLogFn setVerboseLog_ = nullptr;
     SvSetSkitchStandoffFn setSkitchStandoff_ = nullptr;
     SvSkitchVehicleFn skitchVehicle_ = nullptr;

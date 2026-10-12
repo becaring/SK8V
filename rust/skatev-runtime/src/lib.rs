@@ -1070,6 +1070,40 @@ pub unsafe extern "C" fn sv_set_equipment(rt: *mut c_void, truck: f32, wheel: f3
     })
 }
 
+/// Trainer tuning (overlay patch 1000): `tuning` points at 11 positive
+/// multipliers in TrainerTuning order (pop, grind pop, push speed, push power,
+/// braking, steering, wobble, off-board jump, grip, turn power, manual drag),
+/// 1 = Skate 3; `hold_fakie` nonzero keeps fakie. Applied live and to every
+/// later session. Returns 1 when queued.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_set_trainer(rt: *mut c_void, tuning: *const f32, hold_fakie: u32) -> u32 {
+    guard(0, || {
+        let Some(rt) = (unsafe { runtime(rt) }) else { return 0 };
+        if tuning.is_null() {
+            return 0;
+        }
+        let mut t = [1.0f32; 11];
+        t.copy_from_slice(unsafe { std::slice::from_raw_parts(tuning, 11) });
+        if t.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return 0;
+        }
+        rt.jobs.send(Job::Trainer(t, hold_fakie != 0)).is_ok() as u32
+    })
+}
+
+/// The hippie jump's height, times Skate 3's (overlay patch 1001): above 1 it
+/// clears a car. Applied live and to every later session. Returns 1 when queued.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sv_set_hippie_jump(rt: *mut c_void, scale: f32) -> u32 {
+    guard(0, || {
+        let Some(rt) = (unsafe { runtime(rt) }) else { return 0 };
+        if !scale.is_finite() || scale <= 0.0 {
+            return 0;
+        }
+        rt.jobs.send(Job::HippieJump(scale.min(3.0))).is_ok() as u32
+    })
+}
+
 /// Skate 3's difficulty (overlay patch 0043): 0 easy, 1 normal, 2 hardcore,
 /// 3 motorized; applied live and to every later session. Returns 1 when queued.
 #[unsafe(no_mangle)]

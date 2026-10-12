@@ -1,0 +1,38 @@
+diff --git a/crates/skate-host/src/physics/bridge.rs b/crates/skate-host/src/physics/bridge.rs
+--- a/crates/skate-host/src/physics/bridge.rs
++++ b/crates/skate-host/src/physics/bridge.rs
+@@ -14,6 +14,7 @@ pub mod difficulty;
+ pub mod camera_type;
+ pub mod gestures;
+ pub mod preferences;
++pub mod trainer;
+ pub use super::host_bodies::{CHARACTER_GROUP, HostBody, HostImpactLog, HostImpulse, VEHICLE_GROUP};
+ 
+ /// Synthetic HOST regression for the shared moving-entity query boundary.
+diff --git a/crates/skate-host/src/physics/bridge/trainer.rs b/crates/skate-host/src/physics/bridge/trainer.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/skate-host/src/physics/bridge/trainer.rs
+@@ -0,0 +1,22 @@
++//! SkateV trainer tuning (overlay patch 1000, contributed by GTAxSkate): the
++//! skate-host trainer multipliers (pop, grind pop, push, braking, steering,
++//! wobble, off-board jump, grip, turn power, manual drag) and hold-fakie,
++//! which the port reads but nothing set.
++use super::Session;
++
++impl Session {
++    /// Multipliers in `TrainerTuning` field order (each positive, 1 = Skate 3)
++    /// and hold-fakie. False (unchanged) when a multiplier is not positive.
++    pub fn set_trainer(&mut self, tuning: [f32; 11], hold_fakie: bool) -> bool {
++        if tuning.iter().any(|v| !v.is_finite() || *v <= 0.0) {
++            return false;
++        }
++        let [pop, grind_pop, push_speed, push_power, braking, steering, wobble, offboard_jump, grip, turn_power, manual_drag] =
++            tuning;
++        self.physics.trainer = crate::tuning::TrainerTuning {
++            pop, grind_pop, push_speed, push_power, braking, steering, wobble, offboard_jump, grip, turn_power, manual_drag,
++            hold_fakie,
++        };
++        true
++    }
++}

@@ -9,6 +9,7 @@
 #include <cctype>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -110,6 +111,12 @@ struct Config {
     int ridingStyle = 0;           // RidingStyle=Default|Loose|Gonzo|Aggressive: Skate 3's riding animations (kRidingStyles index)
     float truckTightness = 0.7f;   // TruckTightness: 0 loose .. 1 tight (Skate 3 default 0.7)
     float wheelHardness = 0.7f;    // WheelHardness: 0 soft .. 1 hard (Skate 3 default 0.7)
+    // Trainer multipliers (1 = Skate 3), overlay patch 1000: Pop, GrindPop, PushSpeed,
+    // PushPower, Braking, Steering, Wobble, OffboardJump, Grip, TurnPower, ManualDrag.
+    float trainer[11] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    bool holdFakie = false;        // HoldFakie: rolling fakie stays fakie
+    float hippieJump = 1.0f;       // HippieJump: the hippie jump's height, times Skate 3's (1.6 clears a car)
+    bool stamina = true;           // Stamina: GTA's stamina skill weakens push and pop when low; skating trains it
     int skaterTriangles = 3000;
     bool dynamicWorld = true;
     float dynamicRadius = 35.0f;
@@ -291,6 +298,20 @@ const Key kKeys[] = {
      }},
     {"TruckTightness", Store<&Config::truckTightness>},
     {"WheelHardness", Store<&Config::wheelHardness>},
+    {"Pop", [](Config& c, const std::string& v) { Parse(v, c.trainer[0]); }},
+    {"GrindPop", [](Config& c, const std::string& v) { Parse(v, c.trainer[1]); }},
+    {"PushSpeed", [](Config& c, const std::string& v) { Parse(v, c.trainer[2]); }},
+    {"PushPower", [](Config& c, const std::string& v) { Parse(v, c.trainer[3]); }},
+    {"Braking", [](Config& c, const std::string& v) { Parse(v, c.trainer[4]); }},
+    {"Steering", [](Config& c, const std::string& v) { Parse(v, c.trainer[5]); }},
+    {"Wobble", [](Config& c, const std::string& v) { Parse(v, c.trainer[6]); }},
+    {"OffboardJump", [](Config& c, const std::string& v) { Parse(v, c.trainer[7]); }},
+    {"Grip", [](Config& c, const std::string& v) { Parse(v, c.trainer[8]); }},
+    {"TurnPower", [](Config& c, const std::string& v) { Parse(v, c.trainer[9]); }},
+    {"ManualDrag", [](Config& c, const std::string& v) { Parse(v, c.trainer[10]); }},
+    {"HoldFakie", Store<&Config::holdFakie>},
+    {"HippieJump", Store<&Config::hippieJump>},
+    {"Stamina", Store<&Config::stamina>},
     {"SkitchStandoff", Store<&Config::skitchStandoff>},
     {"SkaterTriangles", Store<&Config::skaterTriangles>},
     {"DynamicWorld", Store<&Config::dynamicWorld>},
@@ -2702,6 +2723,58 @@ menu::Apply Bound(const char* key, std::function<void()> then = {}) {
     };
 }
 
+// The trainer multipliers and hold-fakie to the runtime (overlay patch 1000).
+// GTA's stamina skill (0..100) as leg strength: 85 % with none, all with
+// full, on pop, push speed, push power and the jump on foot.
+float g_strength = 1.0f;
+
+void ApplyTrainer() {
+    float tuning[11];
+    std::memcpy(tuning, g_config.trainer, sizeof(tuning));
+    for (int i : {0, 2, 3, 7}) tuning[i] *= g_strength;
+    g_runtime.SetTrainer(tuning, g_config.holdFakie);
+}
+
+// Stamina (contributed by GTAxSkate): every 2 s the character's stamina
+// stat sets the leg strength; a minute skated at 3 m/s or more trains one
+// point, as sprinting does.
+void StaminaTick(bool skating, const SvOutput& last) {
+    static DWORD s_check = 0, s_last = GetTickCount();
+    static float s_trained = 0.0f;
+    const DWORD now = GetTickCount();
+    const float dt = std::min(0.25f, static_cast<float>(now - s_last) / 1000.0f);
+    s_last = now;
+    if (!g_config.stamina) {
+        if (g_strength != 1.0f) g_strength = 1.0f, ApplyTrainer();
+        return;
+    }
+    const std::uint32_t model = Call<std::uint32_t>(gta::GET_ENTITY_MODEL, Call<int>(gta::PLAYER_PED_ID));
+    const char* stat = model == util::Joaat("player_zero") ? "SP0_STAMINA"
+                       : model == util::Joaat("player_one") ? "SP1_STAMINA"
+                       : model == util::Joaat("player_two") ? "SP2_STAMINA" : nullptr;
+    if (!stat) return;
+    const std::uint32_t hash = util::Joaat(stat);
+    const float speed = std::sqrt(last.velocity.x * last.velocity.x + last.velocity.y * last.velocity.y);
+    if (skating && speed >= 3.0f && (s_trained += dt) >= 60.0f) {
+        s_trained -= 60.0f;
+        int value = 0;
+        if (Call<BOOL>(gta::STAT_GET_INT, hash, &value, -1) && value < 100) {
+            Call<BOOL>(gta::STAT_SET_INT, hash, value + 1, true);
+            Logf("SkateV Legacy: skating trained stamina to %d", value + 1);
+        }
+    }
+    if (static_cast<LONG>(now - s_check) < 0) return;
+    s_check = now + 2000;
+    int value = 100;
+    if (!Call<BOOL>(gta::STAT_GET_INT, hash, &value, -1)) return;
+    const float strength = 0.85f + 0.15f * static_cast<float>(std::clamp(value, 0, 100)) / 100.0f;
+    if (std::fabs(strength - g_strength) > 0.005f) {
+        g_strength = strength;
+        ApplyTrainer();
+        Logf("SkateV Legacy: stamina %d: push and pop at %.0f %%", value, strength * 100.0f);
+    }
+}
+
 void ApplyQuirk() {
     const Config& c = g_config;
     SvQuirkConfig q{};
@@ -2761,6 +2834,21 @@ std::vector<menu::Page> MenuPages(Session& s) {
                Bound("TruckTightness", [] { g_runtime.SetEquipment(g_config.truckTightness, g_config.wheelHardness); })),
         Number("Wheel hardness", "WheelHardness", D.wheelHardness, 0, 1, 0.05f, Fixed("%.2f"),
                Bound("WheelHardness", [] { g_runtime.SetEquipment(g_config.truckTightness, g_config.wheelHardness); })),
+        Number("Pop height", "Pop", 1, 0.5f, 5, 0.05f, Fixed("%.2fx"), Bound("Pop", [] { ApplyTrainer(); })),
+        Number("Grind pop", "GrindPop", 1, 0.5f, 5, 0.05f, Fixed("%.2fx"), Bound("GrindPop", [] { ApplyTrainer(); })),
+        Number("Push speed", "PushSpeed", 1, 0.5f, 3, 0.05f, Fixed("%.2fx"), Bound("PushSpeed", [] { ApplyTrainer(); })),
+        Number("Push power", "PushPower", 1, 0.5f, 3, 0.05f, Fixed("%.2fx"), Bound("PushPower", [] { ApplyTrainer(); })),
+        Number("Braking", "Braking", 1, 0.5f, 3, 0.05f, Fixed("%.2fx"), Bound("Braking", [] { ApplyTrainer(); })),
+        Number("Steering", "Steering", 1, 0.5f, 3, 0.05f, Fixed("%.2fx"), Bound("Steering", [] { ApplyTrainer(); })),
+        Number("Wobble", "Wobble", 1, 0.1f, 3, 0.05f, Fixed("%.2fx"), Bound("Wobble", [] { ApplyTrainer(); })),
+        Number("Off-board jump", "OffboardJump", 1, 0.5f, 3, 0.05f, Fixed("%.2fx"), Bound("OffboardJump", [] { ApplyTrainer(); })),
+        Number("Grip", "Grip", 1, 0.5f, 3, 0.05f, Fixed("%.2fx"), Bound("Grip", [] { ApplyTrainer(); })),
+        Number("Turn power", "TurnPower", 1, 0.5f, 3, 0.05f, Fixed("%.2fx"), Bound("TurnPower", [] { ApplyTrainer(); })),
+        Number("Manual drag", "ManualDrag", 1, 0.1f, 3, 0.05f, Fixed("%.2fx"), Bound("ManualDrag", [] { ApplyTrainer(); })),
+        Flag("Hold fakie", "HoldFakie", false, Bound("HoldFakie", [] { ApplyTrainer(); })),
+        Number("Hippie jump height", "HippieJump", 1, 0.8f, 2.5f, 0.05f, Fixed("%.2fx"),
+               Bound("HippieJump", [] { g_runtime.SetHippieJump(g_config.hippieJump); })),
+        Flag("Stamina (GTA skill) sets push and pop", "Stamina", true, Bound("Stamina")),
         Flag("Ramp lip rule", "LipRule", D.lipRule, Bound("LipRule", [] { g_runtime.SetLipRule(g_config.lipRule); })),
         Number("Air time limit", "AirTimeLimit", D.airTimeLimit, -1, 120, 5, LimitText,
                Bound("AirTimeLimit", [] { g_runtime.SetAirLimit(g_config.airTimeLimit); })),
@@ -2991,6 +3079,11 @@ void ScriptMain() {
              g_runtime.SetPosture(cfg.posture) && g_runtime.SetRidingStyle(cfg.ridingStyle) &&
                      g_runtime.SetEquipment(cfg.truckTightness, cfg.wheelHardness)
                  ? "runtime option present" : "runtime option absent");
+        Logf("SkateV Legacy: trainer pop %.2f, grind pop %.2f, push %.2f/%.2f, hold fakie %d (%s)", cfg.trainer[0], cfg.trainer[1],
+             cfg.trainer[2], cfg.trainer[3], cfg.holdFakie ? 1 : 0,
+             g_runtime.SetTrainer(cfg.trainer, cfg.holdFakie) ? "runtime option present" : "runtime option absent");
+        Logf("SkateV Legacy: hippie jump x%.2f (%s)", cfg.hippieJump,
+             g_runtime.SetHippieJump(cfg.hippieJump) ? "runtime option present" : "runtime option absent");
         g_runtime.SetVerboseLog(cfg.verboseLog);
     }
 
@@ -3132,6 +3225,7 @@ void ScriptMain() {
                 Logf("SkateV Legacy: M while skating: GTA's menu script pi_menu threads %d (before the press %d)", menus, s_before);
             }
         }
+        StaminaTick(s.state == LifeState::Skating, s.last);
         physlevel::Tick();
         Lap(kPartLevel);
         monitor.Work(monitor.Now() - workStart);

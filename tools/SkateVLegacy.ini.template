@@ -68,6 +68,24 @@ RidingStyle=Default
 ; TruckTightness / WheelHardness: Skate 3's board setup, 0..1 (0.7 default). Tighter trucks turn less and wobble later; harder wheels slide more.
 TruckTightness=0.7
 WheelHardness=0.7
+; Trainer multipliers (1 = Skate 3; set them in the SK8V menu too): Pop (ollie height), GrindPop, PushSpeed,
+;   PushPower, Braking, Steering, Wobble, OffboardJump, Grip, TurnPower, ManualDrag. HoldFakie=1 keeps fakie.
+Pop=1
+GrindPop=1
+PushSpeed=1
+PushPower=1
+Braking=1
+Steering=1
+Wobble=1
+OffboardJump=1
+Grip=1
+TurnPower=1
+ManualDrag=1
+HoldFakie=0
+; HippieJump: the hippie jump's height, times Skate 3's; 1.6 clears a car.
+HippieJump=1
+; Stamina: GTA's stamina skill sets push and pop (85 % with none, all with full); skating at speed trains it. 0 turns it off.
+Stamina=1
 ; LipRule: 1 = a rolling board stalls on a ramp lip or coping only when riding up into it slowly; dropping in and
 ;   carrying speed over a lip never catch the trucks (ollie onto it to grind). 0 = Skate 3's own. Kept across reinstalls.
 LipRule=1

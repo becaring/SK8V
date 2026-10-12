@@ -73,7 +73,7 @@ Every key can be changed in SK8V's menu (F10), page Keyboard keys: Enter, then t
 | `Q` | Hippie jump |
 | `T` / `Ctrl` | X / B |
 
-Swimming switches to GTA automatically and returns to Skate afterward. While skating, GTA's GPS route to your waypoint stays on, and GTA's skate parks are on the map as yellow blips (`GpsWhileSkating=` / `SkateSpots=` in `SkateVLegacy.ini`). **M** opens GTA's interaction menu while skating too, and the menu's Interaction page sets the GPS to the nearest clothing store or skate spot. **Hall of Meat is on by default** and can be disabled in the SK8V menu, alongside other gameplay settings.
+Swimming switches to GTA automatically and returns to Skate afterward. While skating, GTA's GPS route to your waypoint stays on, and GTA's skate parks are on the map as yellow blips (`GpsWhileSkating=` / `SkateSpots=` in `SkateVLegacy.ini`). **M** opens GTA's interaction menu while skating too, and the menu's Interaction page sets the GPS to the nearest clothing store or skate spot. The SK8V menu's gameplay page also tunes Skate itself: pop height, grind pop, push, braking, steering, wobble, grip, turn power, manual drag, hold fakie and the hippie jump's height (1 = Skate 3; 1.6 clears a car). The character's GTA stamina skill sets push and pop (85 % with none), and skating at speed trains it like sprinting (`Stamina=`). **Hall of Meat is on by default** and can be disabled in the SK8V menu, alongside other gameplay settings.
 
 ### Unable to save settings in the menu?
 

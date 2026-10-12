@@ -1,0 +1,100 @@
+diff --git a/crates/skate-core/src/player/offboard/landing_state.rs b/crates/skate-core/src/player/offboard/landing_state.rs
+--- a/crates/skate-core/src/player/offboard/landing_state.rs
++++ b/crates/skate-core/src/player/offboard/landing_state.rs
+@@ -35,6 +35,8 @@
+     pub previous_category: u32,
+     pub hippy: bool,
+     pub strength: f32,
++    /// The hippie jump's height, times Skate 3's (1 = Skate 3).
++    pub height_scale: f32,
+     pub board_position: Vector,
+     pub com_position: Vector,
+     pub com_velocity: Vector,
+@@ -55,7 +57,7 @@
+         if input.hippy || !preserve {
+             let velocity = if input.hippy {
+                 hippy_jump::calculate(hippy_jump::Input {
+-                    desired_height: (1.-input.strength)*1.35 + input.strength*1.65,
++                    desired_height: ((1.-input.strength)*1.35 + input.strength*1.65) * input.height_scale,
+                     board_position: input.board_position,
+                     centre_of_mass_position: input.com_position,
+                     reference_up: input.up,
+diff --git a/crates/skate-core/src/player/offboard/landing_state/tests.rs b/crates/skate-core/src/player/offboard/landing_state/tests.rs
+--- a/crates/skate-core/src/player/offboard/landing_state/tests.rs
++++ b/crates/skate-core/src/player/offboard/landing_state/tests.rs
+@@ -1,7 +1,7 @@
+ use super::*;
+ fn settings()->Settings {Settings {minimum_auto_angle:5.,automatic_speed:0.1,input_speed:0.2,
+     input_delta:0.01,automatic_delta:0.02,maximum_landing_speed:10.}}
+-fn entry()->Entry {Entry {previous_category:100,hippy:true,strength:0.5,
++fn entry()->Entry {Entry {previous_category:100,hippy:true,strength:0.5,height_scale:1.,
+     board_position:[0.;4],com_position:[0.,1.,0.,0.],com_velocity:[0.;4],
+     board_velocity:[2.,0.,0.,0.],up:UP,hips_up:[1.,0.,0.,0.],
+     animation_right:[1.,0.,0.,0.],reversed:false}}
+@@ -49,3 +49,12 @@
+     assert!(airborne>t);
+     assert_eq!(State::accurate_time(0.,0.,0.,[-2.,-2.],4),0.);
+ }
++#[test]
++fn a_bigger_hippie_jump_takes_off_faster() {
++    let launch = |height_scale: f32| {
++        let (mut state, mut manager) = (State::default(), Manager::default());
++        state.enter(&mut manager, Entry { height_scale, ..entry() });
++        manager.trajectory_32.velocity[1]
++    };
++    assert!(launch(1.6) > launch(1.) * 1.2, "higher, to clear a car");
++}
+diff --git a/crates/skate-host/src/tuning.rs b/crates/skate-host/src/tuning.rs
+--- a/crates/skate-host/src/tuning.rs
++++ b/crates/skate-host/src/tuning.rs
+@@ -12,6 +12,9 @@
+     pub turn_power: f32,
+     pub manual_drag: f32,
+     pub hold_fakie: bool,
++    /// How high a hippie jump goes, times Skate 3's (1.35 to 1.65 m of the
++    /// skater's centre of mass above the board).
++    pub hippie_jump: f32,
+ }
+ impl Default for TrainerTuning {
+     fn default() -> Self {
+@@ -28,6 +31,7 @@
+             turn_power: 1.,
+             manual_drag: 1.,
+             hold_fakie: false,
++            hippie_jump: 1.,
+         }
+     }
+ }
+diff --git a/crates/skate-host/src/physics/landing_on_deck.rs b/crates/skate-host/src/physics/landing_on_deck.rs
+--- a/crates/skate-host/src/physics/landing_on_deck.rs
++++ b/crates/skate-host/src/physics/landing_on_deck.rs
+@@ -85,6 +85,7 @@
+             previous_category: p.category_2516,
+             hippy: p.flags_2480 & 0x1000 != 0,
+             strength: skater.animation_input.extra.jump_strength,
++            height_scale: physics.trainer.hippie_jump,
+             board_position: board[3],
+             com_position: p.vectors_544_560_592_608[2].map(f32::from_bits),
+             com_velocity: p.vectors_544_560_592_608[3].map(f32::from_bits),
+diff --git a/crates/skate-host/src/physics/bridge/trainer.rs b/crates/skate-host/src/physics/bridge/trainer.rs
+--- a/crates/skate-host/src/physics/bridge/trainer.rs
++++ b/crates/skate-host/src/physics/bridge/trainer.rs
+@@ -16,7 +16,18 @@
+         self.physics.trainer = crate::tuning::TrainerTuning {
+             pop, grind_pop, push_speed, push_power, braking, steering, wobble, offboard_jump, grip, turn_power, manual_drag,
+             hold_fakie,
++            hippie_jump: self.physics.trainer.hippie_jump,
+         };
+         true
+     }
++
++    /// How high a hippie jump goes, times Skate 3's (overlay patch 1001):
++    /// above 1 it clears a car. False (unchanged) unless positive.
++    pub fn set_hippie_jump(&mut self, scale: f32) -> bool {
++        if !scale.is_finite() || scale <= 0.0 {
++            return false;
++        }
++        self.physics.trainer.hippie_jump = scale;
++        true
++    }
+ }
