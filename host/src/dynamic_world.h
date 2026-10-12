@@ -53,6 +53,9 @@ public:
     void SetPedLaunch(bool on, float scale, float lift, float spin) {
         launch_ = on, launchScale_ = scale, launchLift_ = lift, launchSpin_ = spin;
     }
+    // PedsSurvive: a ped the board knocks down cannot die until it is up again
+    // (bowled over, not killed).
+    void SetPedsSurvive(bool on) { survive_ = on; }
     // Knocked-over peds: pain grunt when struck, a line once back up.
     void SetPedVoices(int pain, const std::string& getUp) { pedPain_ = pain, pedGetUp_ = getUp; }
     // Once a frame: knocked-over peds back on their feet say their line.
@@ -99,6 +102,7 @@ private:
     bool exchange_ = false;
     bool pedParts_ = false;
     bool launch_ = false;
+    bool survive_ = false;
     float launchScale_ = 1.0f, launchLift_ = 0.0f, launchSpin_ = 1.0f;
     int pedPain_ = 0;
     std::string pedGetUp_;

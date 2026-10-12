@@ -330,6 +330,8 @@ SV_NATIVE(SET_MODEL_AS_NO_LONGER_NEEDED, 0xE532F5D78798DAAB)
 // main.cpp camera views: GTA's own follow camera while skating.
 SV_NATIVE(SET_FOLLOW_PED_CAM_VIEW_MODE, 0x5A4F9EDF1673F704)
 SV_NATIVE(GET_FOLLOW_PED_CAM_VIEW_MODE, 0x8D4D46230B2C353A)
+// dynamic_world.cpp PedsSurvive: a knocked ped cannot die until it is up again.
+SV_NATIVE(SET_ENTITY_INVINCIBLE, 0x3882114BDE571AD4)
 #undef SV_NATIVE
 
 // On-screen text with GTA's font 4. kRight ends at `edge`; kWrap wraps at `edge`.

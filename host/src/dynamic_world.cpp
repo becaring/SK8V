@@ -311,7 +311,10 @@ void DynamicWorld::Knocked(int ped, float impulse) {
     else if (Call<BOOL>(gta::IS_COP_PED_IN_AREA_3D, at.x - 40.0f, at.y - 40.0f, at.z - 20.0f, at.x + 40.0f, at.y + 40.0f, at.z + 20.0f))
         crime::Report(crime::kAssault);
     if (pedPain_ >= 0) pedspeech::Hurt(ped, std::clamp(impulse / 20.0f, 10.0f, 50.0f), false);
-    if (knocked_.size() < 16) knocked_.push_back({ped, GetTickCount(), false});
+    if (knocked_.size() < 16) {
+        knocked_.push_back({ped, GetTickCount(), false});
+        if (survive_) Call<void>(gta::SET_ENTITY_INVINCIBLE, ped, 1);
+    }
 }
 
 void DynamicWorld::SpeakGetUps(void (*log)(const char*)) {
@@ -320,6 +323,7 @@ void DynamicWorld::SpeakGetUps(void (*log)(const char*)) {
         const int ped = it->ped;
         const unsigned long age = now - it->at;
         if (!Call<BOOL>(gta::DOES_ENTITY_EXIST, ped) || Call<BOOL>(gta::IS_PED_DEAD_OR_DYING, ped, 1) || age > 15000) {
+            if (survive_ && Call<BOOL>(gta::DOES_ENTITY_EXIST, ped)) Call<void>(gta::SET_ENTITY_INVINCIBLE, ped, 0);
             it = knocked_.erase(it);
         } else if (!it->up && age > 1000 && !Call<BOOL>(gta::IS_PED_RAGDOLL, ped) && !Call<BOOL>(gta::IS_PED_GETTING_UP, ped)) {
             pedspeech::Pain(ped, 13 /*AUD_DAMAGE_REASON_POST_FALL_GRUNT*/, 0.0f);
@@ -334,6 +338,7 @@ void DynamicWorld::SpeakGetUps(void (*log)(const char*)) {
                               said.empty() ? "no listed context in this voice" : said.c_str());
                 log(line);
             }
+            if (survive_) Call<void>(gta::SET_ENTITY_INVINCIBLE, ped, 0);
             it = knocked_.erase(it);
         } else {
             ++it;

@@ -44,6 +44,9 @@ FilmFilterStrength=0.85
 ; SkateRadio: the radio station skate mode tunes to, e.g. RADIO_19_USER (Self Radio: your User Music, such as
 ;   Skate 3's soundtrack). Empty leaves the radio as it is.
 SkateRadio=
+; PedsSurvive: 1 = peds the board knocks down cannot die until they are up again (bowled over, not
+;   killed; with PedLaunch=0 they are pushed rather than launched). 0 = as Skate's impulse leaves them.
+PedsSurvive=0
 DrawBoard=1
 ; Native Skate board: owned skeletal drawable, original texture/normal/specular inputs, GTA lighting and shadows.
 BoardNative=1

@@ -139,6 +139,7 @@ struct Config {
     // Ped launch (not physical): peds never slow the rider; the first touch
     // launches them at twice the closing speed, scaled, with lift.
     bool pedLaunch = true;
+    bool pedsSurvive = false;    // PedsSurvive: peds the board knocks down cannot die until they are up again
     float pedLaunchScale = 1.0f;
     float pedLaunchLift = 0.3f;
     float pedLaunchSpin = 1.0f; // PedLaunchSpin: gain on the launch's tumble about the struck point (0 none)
@@ -346,6 +347,7 @@ const Key kKeys[] = {
     {"DynamicRadius", Store<&Config::dynamicRadius>},
     {"PedHitboxes", Store<&Config::pedHitboxes>},
     {"PedLaunch", Store<&Config::pedLaunch>},
+    {"PedsSurvive", Store<&Config::pedsSurvive>},
     {"PedLaunchScale", Store<&Config::pedLaunchScale>},
     {"PedLaunchLift", Store<&Config::pedLaunchLift>},
     {"PedLaunchSpin", Store<&Config::pedLaunchSpin>},
@@ -2576,6 +2578,7 @@ void UpdateActive(Session& s, const Config& cfg, const SvPad& pad) {
         // Moving GTA entities near the skater, for Skate's contact code.
         s.world.SetPedParts(cfg.pedHitboxes);
         s.world.SetPedLaunch(cfg.pedLaunch, cfg.pedLaunchScale, cfg.pedLaunchLift, cfg.pedLaunchSpin);
+        s.world.SetPedsSurvive(cfg.pedsSurvive);
         s.world.SetPedVoices(cfg.pedPain, cfg.pedGetUpSpeech);
         s.world.SetVehicleDamage(cfg.vehicleDamage, cfg.vehicleDamageScale, cfg.vehicleDamageMin, cfg.vehicleDamageRadius);
         std::vector<int> presentation = boardparts::Entities();
@@ -3252,6 +3255,7 @@ std::vector<menu::Page> MenuPages(Session& s) {
         Number("Collision radius", "DynamicRadius", D.dynamicRadius, 10, 80, 5, Fixed("%.0f m"), Bound("DynamicRadius")),
         Flag("Peds as body parts", "PedHitboxes", D.pedHitboxes, Bound("PedHitboxes")),
         Flag("Launch peds", "PedLaunch", D.pedLaunch, Bound("PedLaunch")),
+        Flag("Knocked peds survive", "PedsSurvive", D.pedsSurvive, Bound("PedsSurvive")),
         Number("Launch strength", "PedLaunchScale", D.pedLaunchScale, 0, 3, 0.1f, Fixed("x%.1f"), Bound("PedLaunchScale")),
         Number("Launch lift", "PedLaunchLift", D.pedLaunchLift, 0, 1, 0.1f, Fixed("%.1f"), Bound("PedLaunchLift")),
         Number("Launch tumble", "PedLaunchSpin", D.pedLaunchSpin, 0, 3, 0.1f, Fixed("x%.1f"), Bound("PedLaunchSpin")),
