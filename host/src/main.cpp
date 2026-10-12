@@ -562,7 +562,10 @@ bool GameFocused() {
 // controls the player bound in SkateVKeys.txt, plus F back to GTA.
 void DrawKeyboardHints(bool onFoot) {
     std::string& text = g_keyHints[onFoot ? 1 : 0];
-    if (text.empty()) text = g_runtime.KeyboardHints(onFoot) + "F\tBack to GTA\nTab\tGun out / away (hold: weapon wheel)\nMouse buttons\tAim / shoot (gun out)\nF10\tSK8V menu (all settings)\n";
+    if (text.empty()) {
+        text = g_runtime.KeyboardHints(onFoot) + "F\tBack to GTA\nTab\tGun out / away (hold: weapon wheel)\nMouse buttons\tAim / shoot (gun out)\nF10\tSK8V menu (all settings)\nV\tCamera view\n";
+        if (g_runtime.HasActionCam()) text += "R\tCinematic camera\n";
+    }
     float y = 0.25f;
     std::size_t at = 0;
     while (at < text.size()) {
@@ -2596,7 +2599,6 @@ void UpdateActive(Session& s, const Config& cfg, const SvPad& pad) {
         presentation.push_back(boardnative::Entity());
         s.world.Gather(s.ped, s.last.board_position, cfg.dynamicRadius, presentation);
         s.world.SetVehiclePush(cfg.vehiclePush);
-        s.world.Gather(s.ped, s.last.board_position, cfg.dynamicRadius, boardnative::Entity());
         if (const std::string line = s.world.TakePositionLog(); !line.empty()) Log(line.c_str());
         const auto& bodies = s.world.Bodies();
         g_runtime.SetDynamicBodies(bodies.data(), static_cast<std::uint32_t>(bodies.size()));
@@ -2907,7 +2909,6 @@ void LifecycleFrame(Session& s, const Config& cfg, bool f6) {
         const bool yBoard = yHeld && !s_yWas && s.boardWeaponWas && now >= s.suppressEnterUntil && !lifecycle::VehicleNear(player, 3.5f);
         s_yWas = yHeld;
         if (yBoard) Log("SkateV Legacy: Y with the board in hand");
-        if (f6 || wheel || yBoard) TryEnter(s, cfg, !f6);
         // Keyboard: F on foot with no vehicle within 3.5 m gets on, as the weapon
         // wheel does (near a vehicle F stays GTA's enter).
         bool keyF = false;
@@ -2919,7 +2920,7 @@ void LifecycleFrame(Session& s, const Config& cfg, bool f6) {
                 Log("SkateV Legacy: F on the keyboard: board out");
             }
         }
-        if (f6 || wheel || keyF) TryEnter(s, cfg, !f6);
+        if (f6 || wheel || yBoard || keyF) TryEnter(s, cfg, !f6);
         // Refused (vehicle, water, ...): no invisible weapon left in hand.
         if (wheel && s.state == LifeState::Ready) Call<void>(gta::SET_CURRENT_PED_WEAPON, player, 0xA2719263, 1);
         break;

@@ -2268,6 +2268,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "png"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
+dependencies = [
+ "bitflags 2.13.2",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide 0.8.9",
+]
+
+[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2698,7 +2711,7 @@ dependencies = [
 name = "skate-hud"
 version = "0.1.0"
 dependencies = [
- "png",
+ "png 0.17.16",
  "serde",
  "serde_json",
 ]
@@ -2717,6 +2730,15 @@ dependencies = [
 [[package]]
 name = "skate-xma"
 version = "0.1.0"
+
+[[package]]
+name = "skate_boards"
+version = "0.1.0"
+dependencies = [
+ "png 0.18.1",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "skate_input"
@@ -2741,13 +2763,14 @@ name = "skatev-runtime"
 version = "0.2.0"
 dependencies = [
  "bevy_math",
- "png",
+ "png 0.17.16",
  "rustc-hash",
  "serde_json",
  "skate-aems",
  "skate-core",
  "skate-host",
  "skate-hud",
+ "skate_boards",
  "skate_input",
  "svwc",
 ]

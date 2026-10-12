@@ -298,6 +298,8 @@ bool RuntimeBridge::SetHippieJump(float scale) {
 
 bool RuntimeBridge::SetTrainer(const float (&tuning)[11], bool holdFakie) {
     return runtime_ && setTrainer_ && setTrainer_(runtime_, tuning, holdFakie ? 1u : 0u) != 0;
+}
+
 bool RuntimeBridge::ShopStart(const std::string& assets, const std::string& garages) {
     return runtime_ && shopStart_ && shopStart_(runtime_, assets.c_str(), garages.c_str()) != 0;
 }
@@ -355,8 +357,12 @@ bool RuntimeBridge::ShopRide(const char* state, float speed, float dt) {
 
 bool RuntimeBridge::ShopRestPose(const float (&at)[16], SvBoardPose& out) {
     return runtime_ && shopRestPose_ && shopRestPose_(runtime_, at, &out) != 0;
+}
+
 bool RuntimeBridge::ActionCam(int mode, const float (&at)[3], const float (&velocity)[3], float dt, float (&out)[7]) {
     return runtime_ && actionCam_ && actionCam_(runtime_, static_cast<std::uint32_t>(mode), at, velocity, dt, out) != 0;
+}
+
 bool RuntimeBridge::VehicleNeedsShape(std::uint32_t model) {
     return runtime_ && vehicleNeedsShape_ && vehicleNeedsShape_(runtime_, model) != 0;
 }

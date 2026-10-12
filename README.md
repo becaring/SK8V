@@ -1,3 +1,8 @@
+> ## Download and play
+> **[GTAxSkate-Setup.zip](https://github.com/Manatros/GTAxSkate/releases/latest/download/GTAxSkate-Setup.zip)**: unzip, close GTA V, double-click `Install GTAxSkate.cmd`, pick your Skate 3 disc. It installs SK8V with every addition below. Help and problems: [GTAxSkate](https://github.com/Manatros/GTAxSkate).
+>
+> This repository is GTAxSkate's fork of SK8V: the source of its builds (branch `skatemods`) and of its pull requests to SK8V (one `contrib/` branch per feature). What each addition does and why: [GTAXSKATE.md](GTAXSKATE.md).
+
 ![SK8V Gameplay](media/sk8v.webp)
 
 # SK8V
